@@ -482,12 +482,9 @@ func (a App) renderHelpScreen() string {
 	box.WriteString("\n")
 	box.WriteString("  " + subtleStyle.Render("Press any key to close") + "\n")
 
-	// Center the box
-	rendered := lipgloss.NewStyle().
-		Width(w).
-		Height(a.height).
-		Align(lipgloss.Center, lipgloss.Center).
-		Render(box.String())
+	// Center the block on screen
+	content := box.String()
+	rendered := lipgloss.Place(w, a.height, lipgloss.Center, lipgloss.Center, content)
 
 	return rendered
 }
