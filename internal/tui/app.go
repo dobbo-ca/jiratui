@@ -261,6 +261,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case issuesMsg:
 		a.list = NewList(msg.issues, a.width, a.height)
+		// Restore sort indicators
+		switch a.sort.Field {
+		case SortKey:
+			a.list.sortCol = "key"
+		case SortSummary:
+			a.list.sortCol = "summary"
+		}
+		a.list.sortAsc = a.sort.Asc
 		a.state = stateList
 		// Auto-fetch first issue detail
 		if len(msg.issues) > 0 {
