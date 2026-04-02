@@ -161,7 +161,7 @@ func runAuthAdd(cmd *cobra.Command, args []string) error {
 	}
 	email := prompt(reader, "Email")
 
-	token, err := promptSecret("API token (input hidden)")
+	token, err := promptSecret("🔒 API token")
 	if err != nil {
 		return err
 	}
