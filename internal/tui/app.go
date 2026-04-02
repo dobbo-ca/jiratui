@@ -106,6 +106,38 @@ func fetchIssueDetail(client *jira.Client, key string) tea.Cmd {
 	}
 }
 
+// SortField represents a sortable column.
+type SortField int
+
+const (
+	SortUpdated SortField = iota
+	SortKey
+	SortSummary
+)
+
+// SortState tracks the current sort configuration.
+type SortState struct {
+	Field SortField
+	Asc   bool
+}
+
+func (s SortState) orderByClause() string {
+	var field string
+	switch s.Field {
+	case SortKey:
+		field = "key"
+	case SortSummary:
+		field = "summary"
+	default:
+		field = "updated"
+	}
+	dir := "DESC"
+	if s.Asc {
+		dir = "ASC"
+	}
+	return field + " " + dir
+}
+
 // App is the root Bubble Tea model.
 type App struct {
 	state         state
@@ -116,6 +148,7 @@ type App struct {
 	listWidth     int    // width of the list pane (draggable)
 	dragging      bool   // true while dragging the border
 	showHelp      bool   // true when help overlay is visible
+	sort          SortState
 	spinner       spinner.Model
 	client        *jira.Client
 	profileName   string
@@ -138,9 +171,9 @@ func NewApp(client *jira.Client, profileName string) App {
 	}
 }
 
-func fetchIssues(client *jira.Client) tea.Cmd {
+func fetchIssues(client *jira.Client, sort SortState) tea.Cmd {
 	return func() tea.Msg {
-		result, err := client.SearchMyIssues(50, "")
+		result, err := client.SearchMyIssues(50, "", sort.orderByClause())
 		if err != nil {
 			return errMsg{err: err}
 		}
@@ -150,7 +183,7 @@ func fetchIssues(client *jira.Client) tea.Cmd {
 
 // Init starts the spinner and fires the initial data fetch.
 func (a App) Init() tea.Cmd {
-	return tea.Batch(a.spinner.Tick, fetchIssues(a.client))
+	return tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort))
 }
 
 // Update handles all messages.
@@ -213,7 +246,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.err = nil
 				a.detail = nil
 				a.detailKey = ""
-				return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client))
+				return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort))
 			}
 			// Tab switching — forward 1-5 to detail if it exists
 			if a.detail != nil && !a.list.filtering {
@@ -236,6 +269,32 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(a.spinner.Tick, fetchIssueDetail(a.client, msg.issues[0].Key))
 		}
 		return a, nil
+
+	case sortClickMsg:
+		// Toggle sort: same column flips direction, different column sorts asc
+		var newField SortField
+		switch msg.column {
+		case "key":
+			newField = SortKey
+		case "summary":
+			newField = SortSummary
+		default:
+			newField = SortUpdated
+		}
+		if a.sort.Field == newField {
+			a.sort.Asc = !a.sort.Asc
+		} else {
+			a.sort.Field = newField
+			a.sort.Asc = true
+		}
+		// Update list sort state for header indicators
+		a.list.sortCol = msg.column
+		a.list.sortAsc = a.sort.Asc
+		// Re-fetch with new sort
+		a.state = stateLoading
+		a.detail = nil
+		a.detailKey = ""
+		return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort))
 
 	case cursorChangedMsg:
 		// Only fetch if it's a different issue

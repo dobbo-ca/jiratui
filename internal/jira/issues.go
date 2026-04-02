@@ -16,8 +16,13 @@ type SearchResult struct {
 }
 
 // SearchMyIssues fetches issues assigned to the current user.
-func (c *Client) SearchMyIssues(maxResults int, pageToken string) (*SearchResult, error) {
-	jql := "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
+// orderBy is a JQL ORDER BY clause like "key ASC" or "summary DESC".
+// If empty, defaults to "updated DESC".
+func (c *Client) SearchMyIssues(maxResults int, pageToken, orderBy string) (*SearchResult, error) {
+	if orderBy == "" {
+		orderBy = "updated DESC"
+	}
+	jql := "assignee = currentUser() AND statusCategory != Done ORDER BY " + orderBy
 	return c.searchIssues(jql, maxResults, pageToken)
 }
 

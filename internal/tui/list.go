@@ -18,6 +18,11 @@ type cursorChangedMsg struct {
 	issueKey string
 }
 
+// sortClickMsg is sent when a column header is clicked to sort.
+type sortClickMsg struct {
+	column string // "key" or "summary"
+}
+
 func (l List) emitCursorChanged() tea.Cmd {
 	if l.cursor < len(l.filtered) {
 		key := l.filtered[l.cursor].Key
@@ -49,8 +54,10 @@ type List struct {
 	offset      int
 	width       int
 	height      int
-	keyColWidth int  // adjustable key column width for split view
-	draggingCol bool // true while dragging column border
+	keyColWidth int    // adjustable key column width for split view
+	draggingCol bool   // true while dragging column border
+	sortCol     string // "key", "summary", or "" (for default/updated)
+	sortAsc     bool   // sort direction
 }
 
 // maxKeyWidth returns the visual width of the longest issue key.
@@ -382,11 +389,20 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 			}
 			return l, nil
 		case tea.MouseButtonLeft:
-			// Column border drag: click near the key/summary boundary on header row
 			colBorderX := l.keyColWidth + 1 // 1 for leading space
+
+			// Column border drag: click near the key/summary boundary on header row
 			if msg.Action == tea.MouseActionPress && msg.Y <= 1 && msg.X >= colBorderX-1 && msg.X <= colBorderX+1 {
 				l.draggingCol = true
 				return l, nil
+			}
+
+			// Header sort click (row 0, not near column border)
+			if msg.Y == 0 && msg.Action == tea.MouseActionPress {
+				if msg.X < colBorderX-1 {
+					return l, func() tea.Msg { return sortClickMsg{column: "key"} }
+				}
+				return l, func() tea.Msg { return sortClickMsg{column: "summary"} }
 			}
 
 			// Header takes 2 lines, filter takes 1 if active
@@ -474,10 +490,26 @@ func (l List) ViewWithWidth(width, height int) string {
 	divStyle := lipgloss.NewStyle().Foreground(colorBorder)
 	div := divStyle.Render("│")
 
-	// Header
+	// Header with sort indicators
 	headerStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	keyHeader := headerStyle.Render(" " + padRight("Key", keyW))
-	sumHeader := headerStyle.Render(" " + padRight("Summary", summaryW))
+	keyLabel := "Key"
+	sumLabel := "Summary"
+	if l.sortCol == "key" {
+		if l.sortAsc {
+			keyLabel = "Key ▲"
+		} else {
+			keyLabel = "Key ▼"
+		}
+	}
+	if l.sortCol == "summary" {
+		if l.sortAsc {
+			sumLabel = "Summary ▲"
+		} else {
+			sumLabel = "Summary ▼"
+		}
+	}
+	keyHeader := headerStyle.Render(" " + padRight(keyLabel, keyW))
+	sumHeader := headerStyle.Render(" " + padRight(sumLabel, summaryW))
 	b.WriteString(keyHeader + div + sumHeader)
 	b.WriteString("\n")
 
