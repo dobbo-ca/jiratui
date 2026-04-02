@@ -294,17 +294,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if mouseMsg.X < listW {
-				adjusted := mouseMsg
-				adjusted.Y = mouseMsg.Y - 1
 				var cmd tea.Cmd
-				a.list, cmd = a.list.Update(adjusted)
+				a.list, cmd = a.list.Update(mouseMsg)
 				return a, cmd
 			}
 			// Mouse in detail pane
 			if a.detail != nil {
 				adjusted := mouseMsg
 				adjusted.X = mouseMsg.X - listW - 1
-				adjusted.Y = mouseMsg.Y - 1
 				d := *a.detail
 				d, _ = d.Update(adjusted)
 				a.detail = &d

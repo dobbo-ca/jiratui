@@ -285,7 +285,8 @@ func renderFieldStyled(label, styledValue string, width int) string {
 }
 
 // renderFieldMultiline renders a bordered field with word-wrapped content.
-func renderFieldMultiline(label, text string, width int, valueColor lipgloss.Color) string {
+// minContentLines sets the minimum number of content lines (0 = fit to content).
+func renderFieldMultiline(label, text string, width, minContentLines int, valueColor lipgloss.Color) string {
 	if width < 8 {
 		width = 8
 	}
@@ -310,6 +311,12 @@ func renderFieldMultiline(label, text string, width int, valueColor lipgloss.Col
 		}
 		midLines = append(midLines,
 			bdr.Render("│")+" "+lipgloss.NewStyle().Foreground(valueColor).Render(line)+strings.Repeat(" ", pad)+" "+bdr.Render("│"))
+	}
+
+	// Pad to minimum height
+	emptyLine := bdr.Render("│") + " " + strings.Repeat(" ", valW) + " " + bdr.Render("│")
+	for len(midLines) < minContentLines {
+		midLines = append(midLines, emptyLine)
 	}
 
 	bot := bdr.Render("╰" + strings.Repeat("─", innerW) + "╯")
@@ -431,12 +438,23 @@ func (d Detail) renderDetailsTab() string {
 		b.WriteString(row5 + "\n")
 	}
 
-	// Row 6: Description
+	// Row 6: Description — fills remaining vertical space
+	// Calculate lines used so far: 4 rows × 3 lines each + 4 newlines between rows = 16 lines
+	usedLines := 4 * 3 // 4 form rows, 3 lines each (top/mid/bot)
+	if d.issue.Sprint != "" || len(d.issue.Labels) > 0 {
+		usedLines += 3 // sprint/labels row
+	}
+	// Available height for description: total content height minus used lines minus 2 (top+bot border)
+	availH := d.height - 2 - usedLines - 2
+	if availH < 3 {
+		availH = 3
+	}
+
 	descText := d.issue.Description
 	if descText == "" {
 		descText = "No description."
 	}
-	b.WriteString(renderFieldMultiline("Description", descText, w, colorText))
+	b.WriteString(renderFieldMultiline("Description", descText, w, availH, colorText))
 	b.WriteString("\n")
 
 	return b.String()

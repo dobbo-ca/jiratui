@@ -41,14 +41,16 @@ const (
 
 // List is the Bubble Tea model for the issue list view.
 type List struct {
-	filter    textinput.Model
-	filtering bool
-	issues    []models.Issue
-	filtered  []models.Issue
-	cursor    int
-	offset    int
-	width     int
-	height    int
+	filter      textinput.Model
+	filtering   bool
+	issues      []models.Issue
+	filtered    []models.Issue
+	cursor      int
+	offset      int
+	width       int
+	height      int
+	keyColWidth int  // adjustable key column width for split view
+	draggingCol bool // true while dragging column border
 }
 
 // NewList creates a new list model with the given issues.
@@ -58,11 +60,12 @@ func NewList(issues []models.Issue, width, height int) List {
 	ti.CharLimit = 100
 
 	return List{
-		issues:   issues,
-		filtered: issues,
-		filter:   ti,
-		width:    width,
-		height:   height,
+		issues:      issues,
+		filtered:    issues,
+		filter:      ti,
+		width:       width,
+		height:      height,
+		keyColWidth: 14,
 	}
 }
 
@@ -327,6 +330,25 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
+		// Handle column drag motion
+		if l.draggingCol {
+			if msg.Action == tea.MouseActionMotion {
+				newW := msg.X // X is relative to the list pane
+				if newW < 8 {
+					newW = 8
+				}
+				if newW > 30 {
+					newW = 30
+				}
+				l.keyColWidth = newW
+				return l, nil
+			}
+			if msg.Action == tea.MouseActionRelease {
+				l.draggingCol = false
+				return l, nil
+			}
+		}
+
 		switch msg.Button {
 		case tea.MouseButtonWheelDown:
 			prev := l.cursor
@@ -349,6 +371,13 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 			}
 			return l, nil
 		case tea.MouseButtonLeft:
+			// Column border drag: click near the key/summary boundary on header row
+			colBorderX := l.keyColWidth + 1 // 1 for leading space
+			if msg.Action == tea.MouseActionPress && msg.Y <= 1 && msg.X >= colBorderX-1 && msg.X <= colBorderX+1 {
+				l.draggingCol = true
+				return l, nil
+			}
+
 			// Header takes 2 lines, filter takes 1 if active
 			headerOffset := 2
 			if l.filtering {
@@ -362,6 +391,11 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 				if l.cursor != prev {
 					return l, l.emitCursorChanged()
 				}
+			}
+			return l, nil
+		case tea.MouseButtonNone:
+			if msg.Action == tea.MouseActionRelease {
+				l.draggingCol = false
 			}
 			return l, nil
 		}
@@ -414,17 +448,22 @@ func (l List) View() string {
 func (l List) ViewWithWidth(width, height int) string {
 	var b strings.Builder
 
-	// Simplified header for narrow pane
-	headerStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	keyW := 12
-	statusW := 12
-	summaryW := width - keyW - statusW - 3
+	keyW := l.keyColWidth
+	if keyW < 8 {
+		keyW = 8
+	}
+	if keyW > width-10 {
+		keyW = width - 10
+	}
+	summaryW := width - keyW - 2 // 2 for leading space + gap
 	if summaryW < 10 {
 		summaryW = 10
 	}
-	header := fmt.Sprintf(" %s %s %s",
+
+	// Header
+	headerStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	header := fmt.Sprintf(" %s %s",
 		padRight("Key", keyW),
-		padRight("Status", statusW),
 		padRight("Summary", summaryW),
 	)
 	b.WriteString(headerStyle.Render(header))
@@ -444,16 +483,16 @@ func (l List) ViewWithWidth(width, height int) string {
 
 	for i := l.offset; i < end; i++ {
 		issue := l.filtered[i]
-		row := fmt.Sprintf(" %s %s %s",
+		row := fmt.Sprintf(" %s %s",
 			padRight(truncStr(issue.Key, keyW), keyW),
-			padRight(truncStr(issue.Status.Name, statusW), statusW),
 			padRight(truncStr(issue.Summary, summaryW), summaryW),
 		)
 
 		if i == l.cursor {
 			b.WriteString(lipgloss.NewStyle().Foreground(colorText).Background(colorSelection).Render(row))
 		} else {
-			b.WriteString(lipgloss.NewStyle().Foreground(colorText).Render(row))
+			urgency := rowColor(issue)
+			b.WriteString(lipgloss.NewStyle().Foreground(urgency).Render(row))
 		}
 		if i < end-1 {
 			b.WriteString("\n")
