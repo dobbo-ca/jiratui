@@ -8,9 +8,6 @@ import (
 )
 
 const searchResponseJSON = `{
-	"startAt": 0,
-	"maxResults": 50,
-	"total": 2,
 	"issues": [
 		{
 			"key": "PROJ-1",
@@ -47,7 +44,9 @@ const searchResponseJSON = `{
 				"issuelinks": []
 			}
 		}
-	]
+	],
+	"nextPageToken": "",
+	"isLast": true
 }`
 
 func TestSearchMyIssues(t *testing.T) {
@@ -65,19 +64,19 @@ func TestSearchMyIssues(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(server.URL, "user@test.com", "token")
-	issues, total, err := c.SearchMyIssues(0, 50)
+	result, err := c.SearchMyIssues(50, "")
 	if err != nil {
 		t.Fatalf("SearchMyIssues failed: %v", err)
 	}
 
-	if total != 2 {
-		t.Errorf("total = %d, want 2", total)
+	if !result.IsLast {
+		t.Error("expected IsLast to be true")
 	}
-	if len(issues) != 2 {
-		t.Fatalf("got %d issues, want 2", len(issues))
+	if len(result.Issues) != 2 {
+		t.Fatalf("got %d issues, want 2", len(result.Issues))
 	}
 
-	issue := issues[0]
+	issue := result.Issues[0]
 	if issue.Key != "PROJ-1" {
 		t.Errorf("Key = %q, want %q", issue.Key, "PROJ-1")
 	}
@@ -107,8 +106,61 @@ func TestSearchMyIssues(t *testing.T) {
 	}
 
 	// Second issue has no assignee
-	if issues[1].Assignee != nil {
+	if result.Issues[1].Assignee != nil {
 		t.Error("second issue should have nil assignee")
+	}
+}
+
+func TestSearchMyIssuesPagination(t *testing.T) {
+	const page1JSON = `{
+		"issues": [{"key": "PROJ-1", "fields": {"summary": "First", "status": {"id": "1", "name": "To Do"}, "issuetype": {"id": "1", "name": "Task"}, "labels": [], "created": "2025-03-15T10:00:00.000+0000", "updated": "2025-03-15T10:00:00.000+0000", "project": {"key": "PROJ", "name": "P"}, "subtasks": [], "issuelinks": []}}],
+		"nextPageToken": "page2token",
+		"isLast": false
+	}`
+	const page2JSON = `{
+		"issues": [{"key": "PROJ-2", "fields": {"summary": "Second", "status": {"id": "1", "name": "To Do"}, "issuetype": {"id": "1", "name": "Task"}, "labels": [], "created": "2025-03-15T10:00:00.000+0000", "updated": "2025-03-15T10:00:00.000+0000", "project": {"key": "PROJ", "name": "P"}, "subtasks": [], "issuelinks": []}}],
+		"nextPageToken": "",
+		"isLast": true
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("nextPageToken")
+		w.Header().Set("Content-Type", "application/json")
+		if token == "page2token" {
+			w.Write([]byte(page2JSON))
+		} else {
+			w.Write([]byte(page1JSON))
+		}
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "user@test.com", "token")
+
+	// Page 1
+	result, err := c.SearchMyIssues(1, "")
+	if err != nil {
+		t.Fatalf("page 1 failed: %v", err)
+	}
+	if result.IsLast {
+		t.Error("page 1 should not be last")
+	}
+	if result.NextPageToken != "page2token" {
+		t.Errorf("NextPageToken = %q, want %q", result.NextPageToken, "page2token")
+	}
+	if result.Issues[0].Key != "PROJ-1" {
+		t.Errorf("page 1 Key = %q, want PROJ-1", result.Issues[0].Key)
+	}
+
+	// Page 2
+	result, err = c.SearchMyIssues(1, result.NextPageToken)
+	if err != nil {
+		t.Fatalf("page 2 failed: %v", err)
+	}
+	if !result.IsLast {
+		t.Error("page 2 should be last")
+	}
+	if result.Issues[0].Key != "PROJ-2" {
+		t.Errorf("page 2 Key = %q, want PROJ-2", result.Issues[0].Key)
 	}
 }
 
@@ -249,7 +301,7 @@ func TestSearchMyIssuesAuthError(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(server.URL, "bad@test.com", "bad-token")
-	_, _, err := c.SearchMyIssues(0, 50)
+	_, err := c.SearchMyIssues(50, "")
 	if err == nil {
 		t.Fatal("expected auth error, got nil")
 	}

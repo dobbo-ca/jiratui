@@ -8,34 +8,42 @@ import (
 	"github.com/christopherdobbyn/jiratui/internal/models"
 )
 
+// SearchResult holds a page of issues and pagination state.
+type SearchResult struct {
+	Issues        []models.Issue
+	NextPageToken string
+	IsLast        bool
+}
+
 // SearchMyIssues fetches issues assigned to the current user.
-// Returns the issues, total count, and any error.
-func (c *Client) SearchMyIssues(startAt, maxResults int) ([]models.Issue, int, error) {
+func (c *Client) SearchMyIssues(maxResults int, pageToken string) (*SearchResult, error) {
 	jql := "assignee = currentUser() ORDER BY updated DESC"
-	return c.searchIssues(jql, startAt, maxResults)
+	return c.searchIssues(jql, maxResults, pageToken)
 }
 
 // SearchIssues fetches issues matching the given JQL query.
-func (c *Client) SearchIssues(jql string, startAt, maxResults int) ([]models.Issue, int, error) {
-	return c.searchIssues(jql, startAt, maxResults)
+func (c *Client) SearchIssues(jql string, maxResults int, pageToken string) (*SearchResult, error) {
+	return c.searchIssues(jql, maxResults, pageToken)
 }
 
-func (c *Client) searchIssues(jql string, startAt, maxResults int) ([]models.Issue, int, error) {
+func (c *Client) searchIssues(jql string, maxResults int, pageToken string) (*SearchResult, error) {
 	params := url.Values{}
 	params.Set("jql", jql)
-	params.Set("startAt", strconv.Itoa(startAt))
 	params.Set("maxResults", strconv.Itoa(maxResults))
 	params.Set("fields", "summary,status,priority,issuetype,assignee,reporter,labels,created,updated,duedate,project,subtasks,issuelinks,parent,sprint")
+	if pageToken != "" {
+		params.Set("nextPageToken", pageToken)
+	}
 
 	path := "/rest/api/3/search/jql?" + params.Encode()
 	data, err := c.get(path)
 	if err != nil {
-		return nil, 0, fmt.Errorf("searching issues: %w", err)
+		return nil, fmt.Errorf("searching issues: %w", err)
 	}
 
 	resp, err := decodeJSON[jiraSearchResponse](data)
 	if err != nil {
-		return nil, 0, fmt.Errorf("decoding search response: %w", err)
+		return nil, fmt.Errorf("decoding search response: %w", err)
 	}
 
 	issues := make([]models.Issue, len(resp.Issues))
@@ -43,7 +51,11 @@ func (c *Client) searchIssues(jql string, startAt, maxResults int) ([]models.Iss
 		issues[i] = mapIssue(ji, c.baseURL)
 	}
 
-	return issues, resp.Total, nil
+	return &SearchResult{
+		Issues:        issues,
+		NextPageToken: resp.NextPageToken,
+		IsLast:        resp.IsLast,
+	}, nil
 }
 
 // GetIssue fetches a single issue with full detail including comments.

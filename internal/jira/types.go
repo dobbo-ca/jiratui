@@ -1,11 +1,10 @@
 package jira
 
-// jiraSearchResponse is the response from /rest/api/3/search
+// jiraSearchResponse is the response from /rest/api/3/search/jql
 type jiraSearchResponse struct {
-	StartAt    int         `json:"startAt"`
-	MaxResults int         `json:"maxResults"`
-	Total      int         `json:"total"`
-	Issues     []jiraIssue `json:"issues"`
+	Issues        []jiraIssue `json:"issues"`
+	NextPageToken string      `json:"nextPageToken,omitempty"`
+	IsLast        bool        `json:"isLast"`
 }
 
 type jiraIssue struct {

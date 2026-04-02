@@ -36,7 +36,7 @@ func runIssues(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Fetching issues from %s...\n\n", profile.URL)
 
-	issues, total, err := client.SearchMyIssues(0, 50)
+	result, err := client.SearchMyIssues(50, "")
 	if err != nil {
 		return err
 	}
@@ -45,7 +45,7 @@ func runIssues(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(w, "KEY\tPRIORITY\tSTATUS\tASSIGNEE\tSUMMARY\n")
 	fmt.Fprintf(w, "---\t--------\t------\t--------\t-------\n")
 
-	for _, issue := range issues {
+	for _, issue := range result.Issues {
 		assignee := "-"
 		if issue.Assignee != nil {
 			assignee = issue.Assignee.DisplayName
@@ -60,7 +60,12 @@ func runIssues(cmd *cobra.Command, args []string) error {
 	}
 
 	w.Flush()
-	fmt.Printf("\nShowing %d of %d issues\n", len(issues), total)
+
+	more := ""
+	if !result.IsLast {
+		more = " (more available)"
+	}
+	fmt.Printf("\nShowing %d issues%s\n", len(result.Issues), more)
 
 	return nil
 }
