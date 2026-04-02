@@ -15,6 +15,7 @@ var (
 	colorInfo       = lipgloss.Color("#7dcfff") // cyan
 	colorSubtle     = lipgloss.Color("#565f89") // gray
 	colorPurple     = lipgloss.Color("#bb9af7")
+	colorSelection  = lipgloss.Color("#292e42")
 )
 
 // StyledStatus returns a color-coded status string.

@@ -122,9 +122,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 		if a.state == stateDetailLoading {
-			var cmd tea.Cmd
-			a.list, cmd = a.list.Update(msg)
-			return a, cmd
+			a.list.width = msg.Width
+			a.list.height = msg.Height
+			a.list.clampCursor()
+			return a, nil
 		}
 		return a, nil
 

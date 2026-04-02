@@ -186,9 +186,8 @@ func (l List) renderRow(issue models.Issue, selected bool) string {
 	pColor := priorityColor(issue.Priority.Name)
 
 	if selected {
-		bg := lipgloss.Color("#292e42")
-		prio := lipgloss.NewStyle().Foreground(pColor).Background(bg).Render(padRight("●", colWPriority))
-		rest := lipgloss.NewStyle().Foreground(urgency).Background(bg).Render(text)
+		prio := lipgloss.NewStyle().Foreground(pColor).Background(colorSelection).Render(padRight("●", colWPriority))
+		rest := lipgloss.NewStyle().Foreground(urgency).Background(colorSelection).Render(text)
 		return prio + rest
 	}
 
@@ -410,8 +409,7 @@ func (l List) ViewWithWidth(width, height int) string {
 		)
 
 		if i == l.cursor {
-			bg := lipgloss.Color("#292e42")
-			b.WriteString(lipgloss.NewStyle().Foreground(colorText).Background(bg).Render(row))
+			b.WriteString(lipgloss.NewStyle().Foreground(colorText).Background(colorSelection).Render(row))
 		} else {
 			b.WriteString(lipgloss.NewStyle().Foreground(colorText).Render(row))
 		}
