@@ -125,10 +125,6 @@ func runAuthAdd(cmd *cobra.Command, args []string) error {
 	fmt.Println("You'll need a Jira API token. Create one here:")
 	fmt.Println("  https://id.atlassian.com/manage-profile/security/api-tokens")
 	fmt.Println()
-	fmt.Println("Note: Jira Cloud personal API tokens have the same access as your")
-	fmt.Println("account — there are no granular scopes. For scoped access, you'd")
-	fmt.Println("need an OAuth 2.0 app (not supported by jiratui yet).")
-	fmt.Println()
 
 	name := prompt(reader, "👤 Profile name (e.g. work, personal)")
 
