@@ -70,8 +70,14 @@ func defaultListWidth(totalWidth int) int {
 	return w
 }
 
+// usableWidth returns the terminal width minus a right margin to avoid
+// overlapping the terminal scrollbar.
+func (a App) usableWidth() int {
+	return a.width - 1
+}
+
 func (a App) detailPaneWidth() int {
-	return a.width - a.listWidth - 1
+	return a.usableWidth() - a.listWidth - 1
 }
 
 // issuesMsg carries fetched issues into the model.
@@ -156,7 +162,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.listWidth == 0 {
 			a.listWidth = defaultListWidth(msg.Width)
 		}
-		if a.listWidth > msg.Width-30 {
+		if a.listWidth > a.usableWidth()-30 {
 			a.listWidth = msg.Width - 30
 		}
 		if a.listWidth < 20 {
@@ -273,8 +279,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if newWidth < 20 {
 					newWidth = 20
 				}
-				if newWidth > a.width-30 {
-					newWidth = a.width - 30
+				if newWidth > a.usableWidth()-30 {
+					newWidth = a.usableWidth() - 30
 				}
 				a.listWidth = newWidth
 				// Update detail dimensions
@@ -403,8 +409,8 @@ func (a App) View() string {
 		allLines = allLines[:a.height]
 	}
 	for i, line := range allLines {
-		if lipgloss.Width(line) > a.width {
-			allLines[i] = truncateAnsi(line, a.width)
+		if lipgloss.Width(line) > a.usableWidth() {
+			allLines[i] = truncateAnsi(line, a.usableWidth())
 		}
 	}
 
@@ -427,7 +433,7 @@ func (a App) renderHelpBar() string {
 	left := helpStyle.Render(help)
 	right := profileStyle.Render("● " + a.profileName)
 
-	gap := a.width - lipgloss.Width(left) - lipgloss.Width(right)
+	gap := a.usableWidth() - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
 		gap = 0
 	}
