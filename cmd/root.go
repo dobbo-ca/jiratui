@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/christopherdobbyn/jiratui/internal/config"
+	"github.com/christopherdobbyn/jiratui/internal/jira"
+	"github.com/christopherdobbyn/jiratui/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -31,6 +33,21 @@ var rootCmd = &cobra.Command{
 			return runAuthAdd(cmd, nil)
 		}
 		return nil
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfgPath := config.DefaultPath()
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+
+		profile, err := cfg.ActiveProfileConfig()
+		if err != nil {
+			return err
+		}
+
+		client := jira.NewClient(profile.URL, profile.Email, profile.APIToken)
+		return tui.Run(client, cfg.ActiveProfile)
 	},
 }
 
