@@ -244,7 +244,8 @@ func renderField(label, value string, width int, valueColor lipgloss.Color) stri
 
 	valW := innerW - 2 // padding inside
 	displayVal := truncStr(value, valW)
-	pad := valW - len(displayVal)
+	visW := lipgloss.Width(displayVal)
+	pad := valW - visW
 	if pad < 0 {
 		pad = 0
 	}
@@ -305,7 +306,7 @@ func renderFieldMultiline(label, text string, width, minContentLines int, valueC
 	wrapped := wordWrap(text, valW)
 	var midLines []string
 	for _, line := range strings.Split(wrapped, "\n") {
-		pad := valW - len(line)
+		pad := valW - lipgloss.Width(line)
 		if pad < 0 {
 			pad = 0
 		}
