@@ -53,6 +53,17 @@ type List struct {
 	draggingCol bool // true while dragging column border
 }
 
+// maxKeyWidth returns the visual width of the longest issue key.
+func maxKeyWidth(issues []models.Issue) int {
+	w := 3 // minimum: "Key"
+	for _, issue := range issues {
+		if len(issue.Key) > w {
+			w = len(issue.Key)
+		}
+	}
+	return w
+}
+
 // NewList creates a new list model with the given issues.
 func NewList(issues []models.Issue, width, height int) List {
 	ti := textinput.New()
@@ -65,7 +76,7 @@ func NewList(issues []models.Issue, width, height int) List {
 		filter:      ti,
 		width:       width,
 		height:      height,
-		keyColWidth: 14,
+		keyColWidth: maxKeyWidth(issues) + 2, // 1 space each side
 	}
 }
 
