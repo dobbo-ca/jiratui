@@ -147,3 +147,31 @@ func parseDateOnly(s *string) *time.Time {
 	}
 	return &t
 }
+
+// jiraMyselfResponse is the response from /rest/api/3/myself
+type jiraMyselfResponse struct {
+	AccountID   string `json:"accountId"`
+	DisplayName string `json:"displayName"`
+	Email       string `json:"emailAddress"`
+	Active      bool   `json:"active"`
+}
+
+// VerifyCredentials checks that the configured credentials are valid by
+// calling /rest/api/3/myself. Returns the user's display name on success.
+func (c *Client) VerifyCredentials() (string, error) {
+	data, err := c.get("/rest/api/3/myself")
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := decodeJSON[jiraMyselfResponse](data)
+	if err != nil {
+		return "", fmt.Errorf("decoding user info: %w", err)
+	}
+
+	if !resp.Active {
+		return "", fmt.Errorf("account %q is deactivated", resp.DisplayName)
+	}
+
+	return resp.DisplayName, nil
+}

@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/christopherdobbyn/jiratui/internal/config"
+	"github.com/christopherdobbyn/jiratui/internal/jira"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var authCmd = &cobra.Command{
@@ -47,6 +50,16 @@ func prompt(reader *bufio.Reader, label string) string {
 	return strings.TrimSpace(text)
 }
 
+func promptSecret(label string) (string, error) {
+	fmt.Printf("%s: ", label)
+	bytes, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Println() // newline after hidden input
+	if err != nil {
+		return "", fmt.Errorf("reading secret input: %w", err)
+	}
+	return strings.TrimSpace(string(bytes)), nil
+}
+
 func runAuthAdd(cmd *cobra.Command, args []string) error {
 	cfgPath := config.DefaultPath()
 
@@ -67,16 +80,39 @@ func runAuthAdd(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("Add a new Jira Cloud profile")
 	fmt.Println("---")
-	fmt.Println("You'll need an API token from: https://id.atlassian.com/manage-profile/security/api-tokens")
+	fmt.Println()
+	fmt.Println("You'll need a Jira API token. Create one here:")
+	fmt.Println("  https://id.atlassian.com/manage-profile/security/api-tokens")
+	fmt.Println()
+	fmt.Println("Note: Jira Cloud personal API tokens have the same access as your")
+	fmt.Println("account — there are no granular scopes. For scoped access, you'd")
+	fmt.Println("need an OAuth 2.0 app (not supported by jiratui yet).")
 	fmt.Println()
 
 	name := prompt(reader, "Profile name (e.g. work, personal)")
 	url := prompt(reader, "Jira URL (e.g. https://company.atlassian.net)")
 	email := prompt(reader, "Email")
-	token := prompt(reader, "API token")
+
+	token, err := promptSecret("API token (input hidden)")
+	if err != nil {
+		return err
+	}
+
+	if token == "" {
+		return fmt.Errorf("API token cannot be empty")
+	}
 
 	// Normalize URL: strip trailing slash
 	url = strings.TrimRight(url, "/")
+
+	// Verify credentials before saving
+	fmt.Printf("\nVerifying credentials against %s...\n", url)
+	client := jira.NewClient(url, email, token)
+	displayName, err := client.VerifyCredentials()
+	if err != nil {
+		return fmt.Errorf("credential verification failed: %w", err)
+	}
+	fmt.Printf("Authenticated as: %s\n", displayName)
 
 	profile := config.Profile{
 		URL:      url,

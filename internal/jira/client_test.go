@@ -69,3 +69,51 @@ func TestExtractTextFromADFNil(t *testing.T) {
 		t.Errorf("extractTextFromADF(nil) = %q, want empty string", got)
 	}
 }
+
+func TestVerifyCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/3/myself" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"accountId":"abc123","displayName":"Chris D","emailAddress":"chris@test.com","active":true}`))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "user@test.com", "token")
+	name, err := c.VerifyCredentials()
+	if err != nil {
+		t.Fatalf("VerifyCredentials failed: %v", err)
+	}
+	if name != "Chris D" {
+		t.Errorf("displayName = %q, want %q", name, "Chris D")
+	}
+}
+
+func TestVerifyCredentialsDeactivated(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"accountId":"abc123","displayName":"Chris D","emailAddress":"chris@test.com","active":false}`))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "user@test.com", "token")
+	_, err := c.VerifyCredentials()
+	if err == nil {
+		t.Fatal("expected error for deactivated account, got nil")
+	}
+}
+
+func TestVerifyCredentialsAuthFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"message":"Unauthorized"}`))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "bad@test.com", "bad-token")
+	_, err := c.VerifyCredentials()
+	if err == nil {
+		t.Fatal("expected auth error, got nil")
+	}
+}
