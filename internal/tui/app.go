@@ -115,6 +115,7 @@ type App struct {
 	detailKey     string // issue key currently shown/loading in detail
 	listWidth     int    // width of the list pane (draggable)
 	dragging      bool   // true while dragging the border
+	showHelp      bool   // true when help overlay is visible
 	spinner       spinner.Model
 	client        *jira.Client
 	profileName   string
@@ -186,6 +187,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Global quit — always works
 		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
+		}
+		// Help overlay toggle
+		if msg.String() == "?" {
+			if a.showHelp {
+				a.showHelp = false
+			} else if !a.list.filtering {
+				a.showHelp = true
+			}
+			return a, nil
+		}
+		if a.showHelp {
+			// Any key dismisses help
+			a.showHelp = false
+			return a, nil
 		}
 		if a.state == stateList {
 			// Quit only when not filtering
@@ -401,6 +416,11 @@ func (a App) View() string {
 	allLines = append(allLines, contentLines...)
 	allLines = append(allLines, a.renderHelpBar())
 
+	// Overlay help if visible
+	if a.showHelp {
+		a.overlayHelp(allLines)
+	}
+
 	// Truncate every line to terminal width and cap total lines
 	if len(allLines) > a.height {
 		allLines = allLines[:a.height]
@@ -414,6 +434,89 @@ func (a App) View() string {
 	return strings.Join(allLines, "\n")
 }
 
+
+// overlayHelp renders a centered help box over the given lines.
+func (a App) overlayHelp(lines []string) {
+	helpText := []string{
+		"",
+		"  Keyboard Shortcuts",
+		"  ──────────────────────────────",
+		"",
+		"  Navigation",
+		"    j/↓          Move down",
+		"    k/↑          Move up",
+		"    PgDn/PgUp    Page down/up",
+		"",
+		"  Detail Tabs",
+		"    1-5          Switch tab",
+		"",
+		"  Actions",
+		"    /            Filter issues",
+		"    o            Open in browser",
+		"    r            Refresh issues",
+		"    q            Quit",
+		"    ?            Toggle this help",
+		"",
+		"  Mouse",
+		"    Click        Select issue",
+		"    Scroll       Navigate list",
+		"    Drag border  Resize panes",
+		"    Drag header  Resize columns",
+		"",
+		"  Press any key to close",
+		"",
+	}
+
+	boxW := 40
+	boxH := len(helpText)
+	startY := (a.height - boxH) / 2
+	startX := (a.usableWidth() - boxW) / 2
+	if startY < 0 {
+		startY = 0
+	}
+	if startX < 0 {
+		startX = 0
+	}
+
+	bdr := lipgloss.NewStyle().Foreground(colorAccent)
+	bg := lipgloss.NewStyle().Background(colorHeaderBg).Foreground(colorText)
+
+	// Top border
+	topBorder := bdr.Render("╭" + strings.Repeat("─", boxW-2) + "╮")
+	botBorder := bdr.Render("╰" + strings.Repeat("─", boxW-2) + "╯")
+
+	for i, text := range helpText {
+		row := startY + i
+		if row < 0 || row >= len(lines) {
+			continue
+		}
+		var line string
+		if i == 0 {
+			line = topBorder
+		} else if i == boxH-1 {
+			line = botBorder
+		} else {
+			// Pad/truncate content to fit box
+			content := text
+			contentW := boxW - 4 // borders + padding
+			if len(content) > contentW {
+				content = content[:contentW]
+			}
+			pad := contentW - len(content)
+			if pad < 0 {
+				pad = 0
+			}
+			line = bdr.Render("│") + bg.Render(" "+content+strings.Repeat(" ", pad)+" ") + bdr.Render("│")
+		}
+
+		// Splice the overlay into the line at startX
+		original := lines[row]
+		// Build: original[0:startX] + overlay + original[startX+boxW:]
+		// Use visual widths for correct ANSI handling
+		prefix := truncateAnsi(original, startX)
+		lines[row] = prefix + line
+	}
+}
 
 func (a App) renderHelpBar() string {
 	bgStyle := lipgloss.NewStyle().Background(colorHeaderBg)
