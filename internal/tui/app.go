@@ -482,11 +482,32 @@ func (a App) renderHelpScreen() string {
 	box.WriteString("\n")
 	box.WriteString("  " + subtleStyle.Render("Press any key to close") + "\n")
 
-	// Center the block on screen
-	content := box.String()
-	rendered := lipgloss.Place(w, a.height, lipgloss.Center, lipgloss.Center, content)
+	// Render as fixed-width left-aligned block, then center manually
+	boxW := 44
+	content := lipgloss.NewStyle().Width(boxW).Render(box.String())
 
-	return rendered
+	// Center horizontally with left padding
+	padLeft := (w - boxW) / 2
+	if padLeft < 0 {
+		padLeft = 0
+	}
+
+	// Center vertically
+	contentLines := strings.Split(content, "\n")
+	padTop := (a.height - len(contentLines)) / 2
+	if padTop < 0 {
+		padTop = 0
+	}
+
+	var out strings.Builder
+	for i := 0; i < padTop; i++ {
+		out.WriteString("\n")
+	}
+	for _, line := range contentLines {
+		out.WriteString(strings.Repeat(" ", padLeft) + line + "\n")
+	}
+
+	return out.String()
 }
 
 func (a App) renderHelpBar() string {
