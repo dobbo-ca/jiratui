@@ -90,7 +90,11 @@ func runAuthAdd(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	name := prompt(reader, "Profile name (e.g. work, personal)")
-	url := prompt(reader, "Jira URL (e.g. https://company.atlassian.net)")
+	defaultURL := fmt.Sprintf("https://%s.atlassian.net", name)
+	url := prompt(reader, fmt.Sprintf("Jira URL [%s]", defaultURL))
+	if url == "" {
+		url = defaultURL
+	}
 	email := prompt(reader, "Email")
 
 	token, err := promptSecret("API token (input hidden)")
