@@ -159,16 +159,17 @@ func (d Detail) applyScroll(content string) string {
 		viewHeight = 1
 	}
 
-	// Clamp scrollY
+	// Clamp scrollY (read-only — don't mutate d.scrollY on value receiver)
 	maxScroll := len(lines) - viewHeight
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
-	if d.scrollY > maxScroll {
-		d.scrollY = maxScroll
+	scrollY := d.scrollY
+	if scrollY > maxScroll {
+		scrollY = maxScroll
 	}
 
-	start := d.scrollY
+	start := scrollY
 	end := start + viewHeight
 	if end > len(lines) {
 		end = len(lines)

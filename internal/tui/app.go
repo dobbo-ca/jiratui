@@ -100,8 +100,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 		if a.state == stateDetail {
+			adjusted := tea.WindowSizeMsg{Width: msg.Width, Height: msg.Height - 2}
 			var cmd tea.Cmd
-			a.detail, cmd = a.detail.Update(msg)
+			a.detail, cmd = a.detail.Update(adjusted)
+			return a, cmd
+		}
+		if a.state == stateDetailLoading {
+			var cmd tea.Cmd
+			a.list, cmd = a.list.Update(msg)
 			return a, cmd
 		}
 		return a, nil
