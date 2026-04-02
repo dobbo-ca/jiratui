@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -16,6 +17,8 @@ type state int
 const (
 	stateLoading state = iota
 	stateList
+	stateDetail
+	stateDetailLoading
 )
 
 // issuesMsg carries fetched issues into the model.
@@ -28,10 +31,26 @@ type errMsg struct {
 	err error
 }
 
+// issueDetailMsg carries a fetched issue detail into the model.
+type issueDetailMsg struct {
+	issue models.Issue
+}
+
+func fetchIssueDetail(client *jira.Client, key string) tea.Cmd {
+	return func() tea.Msg {
+		issue, err := client.GetIssue(key)
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return issueDetailMsg{issue: *issue}
+	}
+}
+
 // App is the root Bubble Tea model.
 type App struct {
 	state       state
 	list        List
+	detail      Detail
 	spinner     spinner.Model
 	client      *jira.Client
 	profileName string
@@ -80,12 +99,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.list, cmd = a.list.Update(msg)
 			return a, cmd
 		}
+		if a.state == stateDetail {
+			var cmd tea.Cmd
+			a.detail, cmd = a.detail.Update(msg)
+			return a, cmd
+		}
 		return a, nil
 
 	case tea.KeyMsg:
 		// Global quit — always works
 		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
+		}
+		if a.state == stateDetail {
+			if key.Matches(msg, detailKeys.Escape) {
+				a.state = stateList
+				return a, nil
+			}
+			var cmd tea.Cmd
+			a.detail, cmd = a.detail.Update(msg)
+			return a, cmd
 		}
 		if a.state == stateList {
 			// Quit only when not filtering
@@ -110,8 +143,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.state = stateList
 		return a, nil
 
+	case openIssueMsg:
+		a.state = stateDetailLoading
+		return a, tea.Batch(a.spinner.Tick, fetchIssueDetail(a.client, msg.issueKey))
+
+	case issueDetailMsg:
+		contentHeight := a.height - 2
+		a.detail = NewDetail(msg.issue, a.width, contentHeight)
+		a.state = stateDetail
+		return a, nil
+
 	case spinner.TickMsg:
-		if a.state == stateLoading {
+		if a.state == stateLoading || a.state == stateDetailLoading {
 			var cmd tea.Cmd
 			a.spinner, cmd = a.spinner.Update(msg)
 			return a, cmd
@@ -122,6 +165,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if a.state == stateList {
 		var cmd tea.Cmd
 		a.list, cmd = a.list.Update(msg)
+		return a, cmd
+	}
+
+	if a.state == stateDetail {
+		var cmd tea.Cmd
+		a.detail, cmd = a.detail.Update(msg)
 		return a, cmd
 	}
 
@@ -154,6 +203,14 @@ func (a App) View() string {
 		} else {
 			b.WriteString(a.list.View())
 		}
+	case stateDetailLoading:
+		loadingStyle := lipgloss.NewStyle().
+			PaddingTop(a.height/2 - 2).
+			PaddingLeft(a.width/2 - 12).
+			Foreground(colorText)
+		b.WriteString(loadingStyle.Render(a.spinner.View() + " Loading issue..."))
+	case stateDetail:
+		b.WriteString(a.detail.View())
 	}
 
 	// Pad to push help bar to bottom
@@ -202,10 +259,13 @@ func (a App) renderHelpBar() string {
 		PaddingLeft(1)
 
 	var help string
-	if a.state == stateList && a.list.filtering {
+	switch {
+	case a.state == stateList && a.list.filtering:
 		help = "enter confirm · esc clear filter"
-	} else {
-		help = "↑/k up · ↓/j down · / filter · o open in browser · r refresh · q quit"
+	case a.state == stateDetail:
+		help = "esc back · 1-5 tabs · j/k scroll · o open in browser"
+	default:
+		help = "↑/k up · ↓/j down · enter open · / filter · o browser · r refresh · q quit"
 	}
 
 	rendered := helpStyle.Render(help)

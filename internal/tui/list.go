@@ -13,6 +13,11 @@ import (
 	"github.com/pkg/browser"
 )
 
+// openIssueMsg is sent when the user selects an issue to open in detail view.
+type openIssueMsg struct {
+	issueKey string
+}
+
 // Column widths.
 const (
 	colWPriority = 2
@@ -266,6 +271,13 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 				_ = browser.OpenURL(l.filtered[l.cursor].BrowseURL)
 			}
 			return l, nil
+		case key.Matches(msg, listKeys.Enter):
+			if l.cursor < len(l.filtered) {
+				return l, func() tea.Msg {
+					return openIssueMsg{issueKey: l.filtered[l.cursor].Key}
+				}
+			}
+			return l, nil
 		case key.Matches(msg, listKeys.Down):
 			if l.cursor < len(l.filtered)-1 {
 				l.cursor++
@@ -302,6 +314,11 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 			}
 			clickedRow := msg.Y - headerOffset + l.offset
 			if clickedRow >= 0 && clickedRow < len(l.filtered) {
+				if l.cursor == clickedRow {
+					return l, func() tea.Msg {
+						return openIssueMsg{issueKey: l.filtered[l.cursor].Key}
+					}
+				}
 				l.cursor = clickedRow
 				l.clampCursor()
 			}

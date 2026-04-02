@@ -9,6 +9,7 @@ type ListKeyMap struct {
 	Filter  key.Binding
 	Refresh key.Binding
 	Open    key.Binding
+	Enter   key.Binding
 	Quit    key.Binding
 	Escape  key.Binding
 }
@@ -34,6 +35,10 @@ var listKeys = ListKeyMap{
 		key.WithKeys("o"),
 		key.WithHelp("o", "open in browser"),
 	),
+	Enter: key.NewBinding(
+		key.WithKeys("enter"),
+		key.WithHelp("enter", "open"),
+	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
 		key.WithHelp("q", "quit"),
@@ -41,5 +46,42 @@ var listKeys = ListKeyMap{
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "clear filter"),
+	),
+}
+
+// DetailKeyMap defines key bindings for the detail view.
+type DetailKeyMap struct {
+	Escape key.Binding
+	Open   key.Binding
+	Tab1   key.Binding
+	Tab2   key.Binding
+	Tab3   key.Binding
+	Tab4   key.Binding
+	Tab5   key.Binding
+	Down   key.Binding
+	Up     key.Binding
+}
+
+var detailKeys = DetailKeyMap{
+	Escape: key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "back"),
+	),
+	Open: key.NewBinding(
+		key.WithKeys("o"),
+		key.WithHelp("o", "open in browser"),
+	),
+	Tab1: key.NewBinding(key.WithKeys("1")),
+	Tab2: key.NewBinding(key.WithKeys("2")),
+	Tab3: key.NewBinding(key.WithKeys("3")),
+	Tab4: key.NewBinding(key.WithKeys("4")),
+	Tab5: key.NewBinding(key.WithKeys("5")),
+	Down: key.NewBinding(
+		key.WithKeys("down", "j"),
+		key.WithHelp("j/↓", "scroll down"),
+	),
+	Up: key.NewBinding(
+		key.WithKeys("up", "k"),
+		key.WithHelp("k/↑", "scroll up"),
 	),
 }
