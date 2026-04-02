@@ -72,7 +72,13 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 			d.activeTab = tabAttachments
 			d.scrollY = 0
 		case key.Matches(msg, detailKeys.Down):
-			d.scrollY++
+			if d.activeTab == tabDetails {
+				if d.scrollY < d.descMaxScroll() {
+					d.scrollY++
+				}
+			} else {
+				d.scrollY++
+			}
 		case key.Matches(msg, detailKeys.Up):
 			if d.scrollY > 0 {
 				d.scrollY--
@@ -90,7 +96,13 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 			}
 			return d, nil
 		case tea.MouseButtonWheelDown:
-			d.scrollY++
+			if d.activeTab == tabDetails {
+				if d.scrollY < d.descMaxScroll() {
+					d.scrollY++
+				}
+			} else {
+				d.scrollY++
+			}
 			return d, nil
 		case tea.MouseButtonWheelUp:
 			if d.scrollY > 0 {
@@ -102,6 +114,13 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		d.width = msg.Width
 		d.height = msg.Height
+		// Reclamp scroll after resize
+		if d.activeTab == tabDetails {
+			max := d.descMaxScroll()
+			if d.scrollY > max {
+				d.scrollY = max
+			}
+		}
 		return d, nil
 	}
 
@@ -125,6 +144,39 @@ func (d *Detail) handleTabClick(x int) {
 		}
 		pos += w
 	}
+}
+
+// descMaxScroll returns the maximum scroll offset for the description field.
+// Returns 0 if the description fits within the available space.
+func (d Detail) descMaxScroll() int {
+	w := d.width - 1
+	if w < 8 {
+		w = 8
+	}
+	innerW := w - 2
+	valW := innerW - 2
+
+	descText := d.issue.Description
+	if descText == "" {
+		descText = "No description."
+	}
+	wrapped := wordWrap(descText, valW)
+	totalLines := len(strings.Split(wrapped, "\n"))
+
+	usedLines := 4 * 3
+	if d.issue.Sprint != "" || len(d.issue.Labels) > 0 {
+		usedLines += 3
+	}
+	availH := d.height - 2 - usedLines - 2
+	if availH < 3 {
+		availH = 3
+	}
+
+	maxScroll := totalLines - availH
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	return maxScroll
 }
 
 // View renders the detail view.
