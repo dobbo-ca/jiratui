@@ -65,3 +65,63 @@ func TestDefaultPath(t *testing.T) {
 		t.Errorf("DefaultPath = %q, want filename config.yaml", path)
 	}
 }
+
+func TestAddProfile(t *testing.T) {
+	cfg := &Config{
+		Profiles: map[string]Profile{},
+	}
+
+	err := cfg.AddProfile("work", Profile{
+		URL:      "https://company.atlassian.net",
+		Email:    "chris@company.com",
+		APIToken: "token-123",
+	})
+	if err != nil {
+		t.Fatalf("AddProfile failed: %v", err)
+	}
+
+	if _, ok := cfg.Profiles["work"]; !ok {
+		t.Fatal("profile 'work' not found after add")
+	}
+
+	// Adding duplicate should fail
+	err = cfg.AddProfile("work", Profile{URL: "https://other.atlassian.net"})
+	if err == nil {
+		t.Fatal("expected error adding duplicate profile, got nil")
+	}
+}
+
+func TestActiveProfileConfig(t *testing.T) {
+	cfg := &Config{
+		ActiveProfile: "work",
+		Profiles: map[string]Profile{
+			"work": {
+				URL:      "https://company.atlassian.net",
+				Email:    "chris@company.com",
+				APIToken: "token-123",
+			},
+		},
+	}
+
+	p, err := cfg.ActiveProfileConfig()
+	if err != nil {
+		t.Fatalf("ActiveProfileConfig failed: %v", err)
+	}
+	if p.URL != "https://company.atlassian.net" {
+		t.Errorf("URL = %q, want %q", p.URL, "https://company.atlassian.net")
+	}
+
+	// Missing active profile
+	cfg.ActiveProfile = "nonexistent"
+	_, err = cfg.ActiveProfileConfig()
+	if err == nil {
+		t.Fatal("expected error for missing profile, got nil")
+	}
+
+	// Empty active profile
+	cfg.ActiveProfile = ""
+	_, err = cfg.ActiveProfileConfig()
+	if err == nil {
+		t.Fatal("expected error for empty active profile, got nil")
+	}
+}
