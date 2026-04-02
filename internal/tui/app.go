@@ -380,7 +380,8 @@ func (a App) View() string {
 		content = lipgloss.JoinHorizontal(lipgloss.Top, left, border, right)
 	}
 
-	// Force content to exactly contentH lines, each at most a.width wide
+	// Build all lines, then hard-cap every line to terminal width
+	// and the total to exactly a.height lines
 	contentLines := strings.Split(content, "\n")
 	if len(contentLines) > contentH {
 		contentLines = contentLines[:contentH]
@@ -388,15 +389,23 @@ func (a App) View() string {
 	for len(contentLines) < contentH {
 		contentLines = append(contentLines, "")
 	}
-	for i, line := range contentLines {
+
+	allLines := make([]string, 0, a.height)
+	allLines = append(allLines, a.renderStatusBar())
+	allLines = append(allLines, contentLines...)
+	allLines = append(allLines, a.renderHelpBar())
+
+	// Truncate every line to terminal width and cap total lines
+	if len(allLines) > a.height {
+		allLines = allLines[:a.height]
+	}
+	for i, line := range allLines {
 		if lipgloss.Width(line) > a.width {
-			contentLines[i] = truncateAnsi(line, a.width)
+			allLines[i] = truncateAnsi(line, a.width)
 		}
 	}
 
-	return a.renderStatusBar() + "\n" +
-		strings.Join(contentLines, "\n") + "\n" +
-		a.renderHelpBar()
+	return strings.Join(allLines, "\n")
 }
 
 func (a App) renderStatusBar() string {
