@@ -188,6 +188,7 @@ jiratui/
 - `charmbracelet/bubbletea` — TUI framework
 - `charmbracelet/lipgloss` — terminal styling
 - `charmbracelet/bubbles` — pre-built components (table, text input, spinner, viewport)
+- `github.com/spf13/cobra` — CLI command framework
 - `gopkg.in/yaml.v3` — YAML config parsing
 - Standard library for HTTP, JSON
 
