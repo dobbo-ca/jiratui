@@ -90,6 +90,29 @@ func runAuthAdd(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	name := prompt(reader, "Profile name (e.g. work, personal)")
+
+	// Check if profile already exists
+	if _, exists := cfg.Profiles[name]; exists {
+		fmt.Printf("\nProfile %q already exists.\n", name)
+		fmt.Println("  [r] Replace it with a new profile")
+		fmt.Println("  [n] Choose a different name")
+		fmt.Println("  [q] Cancel")
+		choice := strings.ToLower(prompt(reader, "Choice"))
+		switch choice {
+		case "r":
+			delete(cfg.Profiles, name)
+		case "n":
+			name = prompt(reader, "New profile name")
+			if _, exists := cfg.Profiles[name]; exists {
+				return fmt.Errorf("profile %q also already exists", name)
+			}
+		default:
+			fmt.Println("Cancelled.")
+			return nil
+		}
+		fmt.Println()
+	}
+
 	defaultURL := fmt.Sprintf("https://%s.atlassian.net", name)
 	url := prompt(reader, fmt.Sprintf("Jira URL [%s]", defaultURL))
 	if url == "" {
