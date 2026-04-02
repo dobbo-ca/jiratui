@@ -52,12 +52,53 @@ func prompt(reader *bufio.Reader, label string) string {
 
 func promptSecret(label string) (string, error) {
 	fmt.Printf("%s: ", label)
-	bytes, err := term.ReadPassword(int(syscall.Stdin))
-	fmt.Println() // newline after hidden input
+
+	fd := int(syscall.Stdin)
+	oldState, err := term.MakeRaw(fd)
 	if err != nil {
-		return "", fmt.Errorf("reading secret input: %w", err)
+		// Fallback to ReadPassword if raw mode fails (e.g. piped input)
+		bytes, err := term.ReadPassword(fd)
+		fmt.Println()
+		if err != nil {
+			return "", fmt.Errorf("reading secret input: %w", err)
+		}
+		return strings.TrimSpace(string(bytes)), nil
 	}
-	return strings.TrimSpace(string(bytes)), nil
+	defer term.Restore(fd, oldState)
+
+	var result []byte
+	buf := make([]byte, 1)
+	for {
+		_, err := os.Stdin.Read(buf)
+		if err != nil {
+			break
+		}
+		ch := buf[0]
+		switch {
+		case ch == '\r' || ch == '\n':
+			// Enter pressed — done
+			fmt.Print("\r\n")
+			term.Restore(fd, oldState)
+			return strings.TrimSpace(string(result)), nil
+		case ch == 3:
+			// Ctrl+C
+			fmt.Print("\r\n")
+			term.Restore(fd, oldState)
+			return "", fmt.Errorf("cancelled")
+		case ch == 127 || ch == 8:
+			// Backspace
+			if len(result) > 0 {
+				result = result[:len(result)-1]
+				fmt.Print("\b \b") // erase last asterisk
+			}
+		default:
+			result = append(result, ch)
+			fmt.Print("*")
+		}
+	}
+
+	fmt.Print("\r\n")
+	return strings.TrimSpace(string(result)), nil
 }
 
 func runAuthAdd(cmd *cobra.Command, args []string) error {
