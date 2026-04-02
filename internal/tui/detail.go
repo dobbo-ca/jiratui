@@ -134,21 +134,24 @@ func (d Detail) View() string {
 	b.WriteString(d.renderTabBar())
 	b.WriteString("\n")
 
-	var content string
 	switch d.activeTab {
 	case tabDetails:
-		content = d.renderDetailsTab()
-	case tabComments:
-		content = d.renderCommentsTab()
-	case tabSubtasks:
-		content = d.renderSubtasksTab()
-	case tabLinks:
-		content = d.renderLinksTab()
-	case tabAttachments:
-		content = d.renderAttachmentsTab()
+		// Details tab manages its own layout; scrollY controls description
+		b.WriteString(d.renderDetailsTab())
+	default:
+		var content string
+		switch d.activeTab {
+		case tabComments:
+			content = d.renderCommentsTab()
+		case tabSubtasks:
+			content = d.renderSubtasksTab()
+		case tabLinks:
+			content = d.renderLinksTab()
+		case tabAttachments:
+			content = d.renderAttachmentsTab()
+		}
+		b.WriteString(d.applyScroll(content))
 	}
-
-	b.WriteString(d.applyScroll(content))
 
 	return b.String()
 }
@@ -287,7 +290,8 @@ func renderFieldStyled(label, styledValue string, width int) string {
 
 // renderFieldMultiline renders a bordered field with word-wrapped content.
 // minContentLines sets the minimum number of content lines (0 = fit to content).
-func renderFieldMultiline(label, text string, width, minContentLines int, valueColor lipgloss.Color) string {
+// scrollY scrolls within the content (0 = no scroll).
+func renderFieldMultiline(label, text string, width, minContentLines, scrollY int, valueColor lipgloss.Color) string {
 	if width < 8 {
 		width = 8
 	}
@@ -314,8 +318,21 @@ func renderFieldMultiline(label, text string, width, minContentLines int, valueC
 			bdr.Render("│")+" "+lipgloss.NewStyle().Foreground(valueColor).Render(line)+strings.Repeat(" ", pad)+" "+bdr.Render("│"))
 	}
 
-	// Pad to minimum height
 	emptyLine := bdr.Render("│") + " " + strings.Repeat(" ", valW) + " " + bdr.Render("│")
+
+	// Apply scroll within the content
+	if scrollY > 0 && scrollY < len(midLines) {
+		midLines = midLines[scrollY:]
+	} else if scrollY >= len(midLines) && len(midLines) > 0 {
+		midLines = midLines[len(midLines)-1:]
+	}
+
+	// Truncate to minContentLines (visible area)
+	if minContentLines > 0 && len(midLines) > minContentLines {
+		midLines = midLines[:minContentLines]
+	}
+
+	// Pad to minimum height
 	for len(midLines) < minContentLines {
 		midLines = append(midLines, emptyLine)
 	}
@@ -455,7 +472,7 @@ func (d Detail) renderDetailsTab() string {
 	if descText == "" {
 		descText = "No description."
 	}
-	b.WriteString(renderFieldMultiline("Description", descText, w, availH, colorText))
+	b.WriteString(renderFieldMultiline("Description", descText, w, availH, d.scrollY, colorText))
 	b.WriteString("\n")
 
 	return b.String()
