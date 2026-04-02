@@ -130,7 +130,7 @@ func runAuthAdd(cmd *cobra.Command, args []string) error {
 	fmt.Println("need an OAuth 2.0 app (not supported by jiratui yet).")
 	fmt.Println()
 
-	name := prompt(reader, "Profile name (e.g. work, personal)")
+	name := prompt(reader, "👤 Profile name (e.g. work, personal)")
 
 	// Check if profile already exists
 	if _, exists := cfg.Profiles[name]; exists {
@@ -143,7 +143,7 @@ func runAuthAdd(cmd *cobra.Command, args []string) error {
 		case "r":
 			delete(cfg.Profiles, name)
 		case "n":
-			name = prompt(reader, "New profile name")
+			name = prompt(reader, "👤 New profile name")
 			if _, exists := cfg.Profiles[name]; exists {
 				return fmt.Errorf("profile %q also already exists", name)
 			}
@@ -155,11 +155,11 @@ func runAuthAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	defaultURL := fmt.Sprintf("https://%s.atlassian.net", name)
-	url := prompt(reader, fmt.Sprintf("Jira URL [%s]", defaultURL))
+	url := prompt(reader, fmt.Sprintf("🌐 Jira URL [%s]", defaultURL))
 	if url == "" {
 		url = defaultURL
 	}
-	email := prompt(reader, "Email")
+	email := prompt(reader, "📧 Email")
 
 	token, err := promptSecret("🔒 API token")
 	if err != nil {
