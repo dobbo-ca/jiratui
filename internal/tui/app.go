@@ -21,6 +21,13 @@ const (
 	stateDetailLoading
 )
 
+const splitThreshold = 120
+const listPaneWidth = 50
+
+func (a App) isWide() bool {
+	return a.width >= splitThreshold
+}
+
 // issuesMsg carries fetched issues into the model.
 type issuesMsg struct {
 	issues []models.Issue
@@ -100,7 +107,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 		if a.state == stateDetail {
-			adjusted := tea.WindowSizeMsg{Width: msg.Width, Height: msg.Height - 2}
+			// Also update list for split view
+			a.list.width = msg.Width
+			a.list.height = msg.Height
+			a.list.clampCursor()
+
+			detailWidth := msg.Width
+			if a.isWide() {
+				detailWidth = msg.Width - listPaneWidth - 1
+			}
+			adjusted := tea.WindowSizeMsg{Width: detailWidth, Height: msg.Height - 2}
 			var cmd tea.Cmd
 			a.detail, cmd = a.detail.Update(adjusted)
 			return a, cmd
@@ -155,7 +171,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case issueDetailMsg:
 		contentHeight := a.height - 2
-		a.detail = NewDetail(msg.issue, a.width, contentHeight)
+		detailWidth := a.width
+		if a.isWide() {
+			detailWidth = a.width - listPaneWidth - 1
+		}
+		a.detail = NewDetail(msg.issue, detailWidth, contentHeight)
 		a.state = stateDetail
 		return a, nil
 
@@ -209,14 +229,47 @@ func (a App) View() string {
 		} else {
 			b.WriteString(a.list.View())
 		}
-	case stateDetailLoading:
-		loadingStyle := lipgloss.NewStyle().
-			PaddingTop(a.height/2 - 2).
-			PaddingLeft(a.width/2 - 12).
-			Foreground(colorText)
-		b.WriteString(loadingStyle.Render(a.spinner.View() + " Loading issue..."))
-	case stateDetail:
-		b.WriteString(a.detail.View())
+	case stateDetail, stateDetailLoading:
+		if a.isWide() {
+			// Split: list on left, detail on right
+			listW := listPaneWidth
+			detailW := a.width - listW - 1 // 1 for border
+			contentH := a.height - 2       // status + help bars
+
+			leftList := a.list.ViewWithWidth(listW, contentH)
+
+			borderLines := make([]string, contentH)
+			borderStyle := lipgloss.NewStyle().Foreground(colorBorder)
+			for i := range borderLines {
+				borderLines[i] = borderStyle.Render("│")
+			}
+			border := strings.Join(borderLines, "\n")
+
+			var right string
+			if a.state == stateDetailLoading {
+				loadStyle := lipgloss.NewStyle().
+					Width(detailW).
+					Height(contentH).
+					Foreground(colorText).
+					Align(lipgloss.Center, lipgloss.Center)
+				right = loadStyle.Render(a.spinner.View() + " Loading issue...")
+			} else {
+				right = a.detail.View()
+			}
+
+			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftList, border, right))
+		} else {
+			// Narrow: full-screen swap
+			if a.state == stateDetailLoading {
+				loadingStyle := lipgloss.NewStyle().
+					PaddingTop(a.height/2 - 2).
+					PaddingLeft(a.width/2 - 12).
+					Foreground(colorText)
+				b.WriteString(loadingStyle.Render(a.spinner.View() + " Loading issue..."))
+			} else {
+				b.WriteString(a.detail.View())
+			}
+		}
 	}
 
 	// Pad to push help bar to bottom

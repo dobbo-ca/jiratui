@@ -369,6 +369,60 @@ func (l List) View() string {
 	return b.String()
 }
 
+// ViewWithWidth renders the list at a specific width and height (for split layout).
+func (l List) ViewWithWidth(width, height int) string {
+	var b strings.Builder
+
+	// Simplified header for narrow pane
+	headerStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	keyW := 12
+	statusW := 12
+	summaryW := width - keyW - statusW - 3
+	if summaryW < 10 {
+		summaryW = 10
+	}
+	header := fmt.Sprintf(" %s %s %s",
+		padRight("Key", keyW),
+		padRight("Status", statusW),
+		padRight("Summary", summaryW),
+	)
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(colorBorder).Render(strings.Repeat("─", width)))
+	b.WriteString("\n")
+
+	// Rows
+	vis := height - 2 // header + separator
+	if vis < 1 {
+		vis = 1
+	}
+	end := l.offset + vis
+	if end > len(l.filtered) {
+		end = len(l.filtered)
+	}
+
+	for i := l.offset; i < end; i++ {
+		issue := l.filtered[i]
+		row := fmt.Sprintf(" %s %s %s",
+			padRight(truncStr(issue.Key, keyW), keyW),
+			padRight(truncStr(issue.Status.Name, statusW), statusW),
+			padRight(truncStr(issue.Summary, summaryW), summaryW),
+		)
+
+		if i == l.cursor {
+			bg := lipgloss.Color("#292e42")
+			b.WriteString(lipgloss.NewStyle().Foreground(colorText).Background(bg).Render(row))
+		} else {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorText).Render(row))
+		}
+		if i < end-1 {
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String()
+}
+
 // SetIssues replaces the issue data and rebuilds.
 func (l *List) SetIssues(issues []models.Issue) {
 	l.issues = issues
