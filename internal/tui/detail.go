@@ -73,6 +73,25 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 
 	case tea.MouseMsg:
 		switch msg.Button {
+		case tea.MouseButtonLeft:
+			// Tab bar click detection — y=0 is the tab bar
+			if msg.Y == 0 {
+				// Calculate approximate tab positions based on rendered label widths
+				// Labels: " 1:Details " (11), " 2:Description " (16), " 3:Comments(N) " (~16), " 4:Subtasks(N) " (~16), " 5:Links(N) " (~14)
+				tabEnds := []int{11, 27, 43, 59, 73}
+				for i, end := range tabEnds {
+					start := 0
+					if i > 0 {
+						start = tabEnds[i-1]
+					}
+					if msg.X >= start && msg.X < end {
+						d.activeTab = detailTab(i)
+						d.scrollY = 0
+						return d, nil
+					}
+				}
+			}
+			return d, nil
 		case tea.MouseButtonWheelDown:
 			d.scrollY++
 			return d, nil
