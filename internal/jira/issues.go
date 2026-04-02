@@ -27,7 +27,7 @@ func (c *Client) searchIssues(jql string, startAt, maxResults int) ([]models.Iss
 	params.Set("maxResults", strconv.Itoa(maxResults))
 	params.Set("fields", "summary,status,priority,issuetype,assignee,reporter,labels,created,updated,duedate,project,subtasks,issuelinks,parent,sprint")
 
-	path := "/rest/api/3/search?" + params.Encode()
+	path := "/rest/api/3/search/jql?" + params.Encode()
 	data, err := c.get(path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("searching issues: %w", err)

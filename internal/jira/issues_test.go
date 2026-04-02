@@ -52,7 +52,7 @@ const searchResponseJSON = `{
 
 func TestSearchMyIssues(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/rest/api/3/search" {
+		if r.URL.Path != "/rest/api/3/search/jql" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		jql := r.URL.Query().Get("jql")
