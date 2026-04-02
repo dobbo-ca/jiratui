@@ -17,24 +17,6 @@ var (
 	colorPurple     = lipgloss.Color("#bb9af7")
 )
 
-// PriorityIcon returns an icon for the given Jira priority name.
-func PriorityIcon(priority string) string {
-	switch priority {
-	case "Highest":
-		return "⏫"
-	case "High":
-		return "🔼"
-	case "Medium":
-		return "▶️"
-	case "Low":
-		return "🔽"
-	case "Lowest":
-		return "⏬"
-	default:
-		return "•"
-	}
-}
-
 // StyledStatus returns a color-coded status string.
 func StyledStatus(status string) string {
 	var color lipgloss.Color

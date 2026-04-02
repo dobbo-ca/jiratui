@@ -28,28 +28,6 @@ func TestThemeColorsAreDefined(t *testing.T) {
 	}
 }
 
-func TestPriorityStyle(t *testing.T) {
-	tests := []struct {
-		priority string
-		wantIcon string
-	}{
-		{"Highest", "⏫"},
-		{"High", "🔼"},
-		{"Medium", "▶️"},
-		{"Low", "🔽"},
-		{"Lowest", "⏬"},
-		{"Unknown", "•"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.priority, func(t *testing.T) {
-			got := PriorityIcon(tt.priority)
-			if got != tt.wantIcon {
-				t.Errorf("PriorityIcon(%q) = %q, want %q", tt.priority, got, tt.wantIcon)
-			}
-		})
-	}
-}
-
 func TestStatusStyle(t *testing.T) {
 	tests := []string{"To Do", "In Progress", "In Review", "Done", "Unknown"}
 	for _, status := range tests {

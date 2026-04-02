@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -14,23 +13,25 @@ import (
 	"github.com/pkg/browser"
 )
 
-// Column indices for issueToRow output.
+// Column widths.
 const (
-	colKey      = 0
-	colPriority = 1
-	colStatus   = 2
-	colAssignee = 3
-	colUpdated  = 4
-	colSummary  = 5
+	colWPriority = 2
+	colWKey      = 12
+	colWStatus   = 14
+	colWAssignee = 16
+	colWUpdated  = 10
+	colGap       = 1
+	fixedCols    = colWPriority + colWKey + colWStatus + colWAssignee + colWUpdated + 5*colGap
 )
 
 // List is the Bubble Tea model for the issue list view.
 type List struct {
-	table     table.Model
 	filter    textinput.Model
 	filtering bool
 	issues    []models.Issue
 	filtered  []models.Issue
+	cursor    int
+	offset    int
 	width     int
 	height    int
 }
@@ -41,89 +42,154 @@ func NewList(issues []models.Issue, width, height int) List {
 	ti.Placeholder = "Filter by key or summary..."
 	ti.CharLimit = 100
 
-	l := List{
+	return List{
 		issues:   issues,
 		filtered: issues,
 		filter:   ti,
 		width:    width,
 		height:   height,
 	}
-	l.table = l.buildTable()
-	return l
-}
-
-func (l *List) buildTable() table.Model {
-	columns := []table.Column{
-		{Title: "Key", Width: 12},
-		{Title: "P", Width: 3},
-		{Title: "Status", Width: 14},
-		{Title: "Assignee", Width: 16},
-		{Title: "Updated", Width: 10},
-		{Title: "Summary", Width: l.summaryWidth()},
-	}
-
-	rows := make([]table.Row, len(l.filtered))
-	for i, issue := range l.filtered {
-		rows[i] = issueToRow(issue)
-	}
-
-	t := table.New(
-		table.WithColumns(columns),
-		table.WithRows(rows),
-		table.WithFocused(true),
-		table.WithHeight(l.tableHeight()),
-	)
-
-	s := table.DefaultStyles()
-	s.Header = s.Header.
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(colorBorder).
-		BorderBottom(true).
-		Bold(true).
-		Foreground(colorAccent)
-	s.Selected = s.Selected.
-		Foreground(colorText).
-		Background(lipgloss.Color("#292e42")).
-		Bold(false)
-	t.SetStyles(s)
-
-	return t
 }
 
 func (l *List) summaryWidth() int {
-	// Key(12) + P(3) + Status(14) + Assignee(16) + Updated(10) + gaps(5*3=15) = 70
-	w := l.width - 70
+	w := l.width - fixedCols
 	if w < 20 {
 		w = 20
 	}
 	return w
 }
 
-func (l *List) tableHeight() int {
-	// Reserve: status bar(1) + filter(1 if active) + help bar(1) + table header(2) + padding(1)
+func (l *List) visibleRows() int {
+	// Reserve: status bar(1) + header(1) + separator(1) + help bar(1) + padding(1)
 	h := l.height - 5
 	if l.filtering {
 		h--
 	}
-	if h < 3 {
-		h = 3
+	if h < 1 {
+		h = 1
 	}
 	return h
 }
 
-func issueToRow(issue models.Issue) table.Row {
+func (l *List) clampCursor() {
+	if len(l.filtered) == 0 {
+		l.cursor = 0
+		l.offset = 0
+		return
+	}
+	if l.cursor >= len(l.filtered) {
+		l.cursor = len(l.filtered) - 1
+	}
+	if l.cursor < 0 {
+		l.cursor = 0
+	}
+	vis := l.visibleRows()
+	if l.cursor < l.offset {
+		l.offset = l.cursor
+	}
+	if l.cursor >= l.offset+vis {
+		l.offset = l.cursor - vis + 1
+	}
+	if l.offset < 0 {
+		l.offset = 0
+	}
+}
+
+// priorityColor returns the color for a priority level.
+func priorityColor(priority string) lipgloss.Color {
+	switch priority {
+	case "Highest":
+		return colorError
+	case "High":
+		return lipgloss.Color("#ff9e64")
+	case "Medium":
+		return colorWarning
+	case "Low":
+		return colorSuccess
+	case "Lowest":
+		return colorAccent
+	default:
+		return colorSubtle
+	}
+}
+
+func rowColor(issue models.Issue) lipgloss.Color {
+	if issue.DueDate == nil {
+		return colorText
+	}
+	now := time.Now()
+	if issue.DueDate.Before(now) {
+		return colorError // red — overdue
+	}
+	if issue.DueDate.Before(now.Add(7 * 24 * time.Hour)) {
+		return colorWarning // yellow — due within a week
+	}
+	return colorText
+}
+
+func truncStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 1 {
+		return s[:max]
+	}
+	return s[:max-1] + "…"
+}
+
+func padRight(s string, width int) string {
+	if len(s) >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-len(s))
+}
+
+func (l List) renderHeader() string {
+	style := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	header := fmt.Sprintf("%s %s %s %s %s %s",
+		padRight("P", colWPriority),
+		padRight("Key", colWKey),
+		padRight("Status", colWStatus),
+		padRight("Assignee", colWAssignee),
+		padRight("Updated", colWUpdated),
+		padRight("Summary", l.summaryWidth()),
+	)
+	return style.Render(header)
+}
+
+func (l List) renderSeparator() string {
+	style := lipgloss.NewStyle().Foreground(colorBorder)
+	return style.Render(strings.Repeat("─", l.width))
+}
+
+func (l List) renderRow(issue models.Issue, selected bool) string {
 	assignee := "-"
 	if issue.Assignee != nil {
 		assignee = issue.Assignee.DisplayName
 	}
-	return table.Row{
-		issue.Key,
-		PriorityIcon(issue.Priority.Name),
-		issue.Status.Name,
-		assignee,
-		relativeTime(issue.Updated),
-		issue.Summary,
+
+	sw := l.summaryWidth()
+	text := fmt.Sprintf(" %s %s %s %s %s",
+		padRight(truncStr(issue.Key, colWKey), colWKey),
+		padRight(truncStr(issue.Status.Name, colWStatus), colWStatus),
+		padRight(truncStr(assignee, colWAssignee), colWAssignee),
+		padRight(truncStr(relativeTime(issue.Updated), colWUpdated), colWUpdated),
+		padRight(truncStr(issue.Summary, sw), sw),
+	)
+
+	urgency := rowColor(issue)
+	pColor := priorityColor(issue.Priority.Name)
+
+	if selected {
+		bg := lipgloss.Color("#292e42")
+		prio := lipgloss.NewStyle().Foreground(pColor).Background(bg).Render(padRight("●", colWPriority))
+		rest := lipgloss.NewStyle().Foreground(urgency).Background(bg).Render(text)
+		return prio + rest
 	}
+
+	prio := lipgloss.NewStyle().Foreground(pColor).Render(padRight("●", colWPriority))
+	rest := lipgloss.NewStyle().Foreground(urgency).Render(text)
+	return prio + rest
 }
 
 func filterIssues(issues []models.Issue, query string) []models.Issue {
@@ -164,8 +230,6 @@ func (l List) Init() tea.Cmd {
 
 // Update handles messages for the list view.
 func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if l.filtering {
@@ -175,7 +239,8 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 				l.filter.SetValue("")
 				l.filter.Blur()
 				l.filtered = l.issues
-				l.table = l.buildTable()
+				l.cursor = 0
+				l.offset = 0
 				return l, nil
 			case msg.Type == tea.KeyEnter:
 				l.filtering = false
@@ -184,10 +249,10 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 			default:
 				var cmd tea.Cmd
 				l.filter, cmd = l.filter.Update(msg)
-				cmds = append(cmds, cmd)
 				l.filtered = filterIssues(l.issues, l.filter.Value())
-				l.table = l.buildTable()
-				return l, tea.Batch(cmds...)
+				l.cursor = 0
+				l.offset = 0
+				return l, cmd
 			}
 		}
 
@@ -195,30 +260,62 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 		case key.Matches(msg, listKeys.Filter):
 			l.filtering = true
 			l.filter.Focus()
-			l.table = l.buildTable()
 			return l, l.filter.Cursor.BlinkCmd()
 		case key.Matches(msg, listKeys.Open):
-			if idx := l.table.Cursor(); idx < len(l.filtered) {
-				_ = browser.OpenURL(l.filtered[idx].BrowseURL)
+			if l.cursor < len(l.filtered) {
+				_ = browser.OpenURL(l.filtered[l.cursor].BrowseURL)
 			}
 			return l, nil
-		case key.Matches(msg, listKeys.Up), key.Matches(msg, listKeys.Down):
-			var cmd tea.Cmd
-			l.table, cmd = l.table.Update(msg)
-			return l, cmd
+		case key.Matches(msg, listKeys.Down):
+			if l.cursor < len(l.filtered)-1 {
+				l.cursor++
+				l.clampCursor()
+			}
+			return l, nil
+		case key.Matches(msg, listKeys.Up):
+			if l.cursor > 0 {
+				l.cursor--
+				l.clampCursor()
+			}
+			return l, nil
+		}
+
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelDown:
+			if l.cursor < len(l.filtered)-1 {
+				l.cursor++
+				l.clampCursor()
+			}
+			return l, nil
+		case tea.MouseButtonWheelUp:
+			if l.cursor > 0 {
+				l.cursor--
+				l.clampCursor()
+			}
+			return l, nil
+		case tea.MouseButtonLeft:
+			// Header takes 2 lines, filter takes 1 if active
+			headerOffset := 2
+			if l.filtering {
+				headerOffset++
+			}
+			clickedRow := msg.Y - headerOffset + l.offset
+			if clickedRow >= 0 && clickedRow < len(l.filtered) {
+				l.cursor = clickedRow
+				l.clampCursor()
+			}
+			return l, nil
 		}
 
 	case tea.WindowSizeMsg:
 		l.width = msg.Width
 		l.height = msg.Height
-		l.table = l.buildTable()
+		l.clampCursor()
 		return l, nil
 	}
 
-	var cmd tea.Cmd
-	l.table, cmd = l.table.Update(msg)
-	cmds = append(cmds, cmd)
-	return l, tea.Batch(cmds...)
+	return l, nil
 }
 
 // View renders the list.
@@ -234,23 +331,39 @@ func (l List) View() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(l.table.View())
+	b.WriteString(l.renderHeader())
+	b.WriteString("\n")
+	b.WriteString(l.renderSeparator())
+	b.WriteString("\n")
+
+	vis := l.visibleRows()
+	end := l.offset + vis
+	if end > len(l.filtered) {
+		end = len(l.filtered)
+	}
+
+	for i := l.offset; i < end; i++ {
+		b.WriteString(l.renderRow(l.filtered[i], i == l.cursor))
+		if i < end-1 {
+			b.WriteString("\n")
+		}
+	}
 
 	return b.String()
 }
 
-// SetIssues replaces the issue data and rebuilds the table.
+// SetIssues replaces the issue data and rebuilds.
 func (l *List) SetIssues(issues []models.Issue) {
 	l.issues = issues
 	l.filtered = filterIssues(issues, l.filter.Value())
-	l.table = l.buildTable()
+	l.cursor = 0
+	l.offset = 0
 }
 
 // SelectedIssue returns the currently selected issue, if any.
 func (l List) SelectedIssue() *models.Issue {
-	idx := l.table.Cursor()
-	if idx >= 0 && idx < len(l.filtered) {
-		return &l.filtered[idx]
+	if l.cursor >= 0 && l.cursor < len(l.filtered) {
+		return &l.filtered[l.cursor]
 	}
 	return nil
 }
