@@ -275,26 +275,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the full app.
 func (a App) View() string {
-	var b strings.Builder
-
-	// Status bar
-	b.WriteString(a.renderStatusBar())
-	b.WriteString("\n")
+	contentH := a.height - 2 // status bar + help bar
+	if contentH < 1 {
+		contentH = 1
+	}
 
 	// Main content — always split layout
+	var content string
 	if a.err != nil {
 		errStyle := lipgloss.NewStyle().
 			Foreground(colorError).
 			PaddingLeft(2).
 			PaddingTop(1)
-		b.WriteString(errStyle.Render("Error: " + a.err.Error()))
+		content = errStyle.Render("Error: " + a.err.Error())
 	} else {
 		listW := a.listWidth
 		detailW := a.detailPaneWidth()
-		contentH := a.height - 2
-		if contentH < 1 {
-			contentH = 1
-		}
 
 		// Left pane: list (or loading placeholder)
 		var left string
@@ -331,13 +327,7 @@ func (a App) View() string {
 			}
 			right = loadStyle.Render(msg)
 		} else if a.detail != nil {
-			// Constrain detail output to exact pane dimensions
-			right = lipgloss.NewStyle().
-				Width(detailW).
-				MaxWidth(detailW).
-				Height(contentH).
-				MaxHeight(contentH).
-				Render(a.detail.View())
+			right = a.detail.View()
 		} else {
 			emptyStyle := lipgloss.NewStyle().
 				Width(detailW).
@@ -347,19 +337,21 @@ func (a App) View() string {
 			right = emptyStyle.Render("No issues found")
 		}
 
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, left, border, right))
+		content = lipgloss.JoinHorizontal(lipgloss.Top, left, border, right)
 	}
 
-	// Pad to push help bar to bottom
-	contentLines := strings.Count(b.String(), "\n") + 1
-	for i := contentLines; i < a.height-1; i++ {
-		b.WriteString("\n")
+	// Force content to exactly contentH lines — truncate or pad
+	contentLines := strings.Split(content, "\n")
+	if len(contentLines) > contentH {
+		contentLines = contentLines[:contentH]
+	}
+	for len(contentLines) < contentH {
+		contentLines = append(contentLines, "")
 	}
 
-	// Help bar
-	b.WriteString(a.renderHelpBar())
-
-	return b.String()
+	return a.renderStatusBar() + "\n" +
+		strings.Join(contentLines, "\n") + "\n" +
+		a.renderHelpBar()
 }
 
 func (a App) renderStatusBar() string {
