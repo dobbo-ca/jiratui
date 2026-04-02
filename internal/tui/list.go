@@ -289,6 +289,22 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 				l.clampCursor()
 			}
 			return l, nil
+		case key.Matches(msg, listKeys.PageDown):
+			vis := l.visibleRows()
+			l.cursor += vis
+			if l.cursor >= len(l.filtered) {
+				l.cursor = len(l.filtered) - 1
+			}
+			l.clampCursor()
+			return l, nil
+		case key.Matches(msg, listKeys.PageUp):
+			vis := l.visibleRows()
+			l.cursor -= vis
+			if l.cursor < 0 {
+				l.cursor = 0
+			}
+			l.clampCursor()
+			return l, nil
 		}
 
 	case tea.MouseMsg:

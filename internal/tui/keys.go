@@ -4,14 +4,16 @@ import "github.com/charmbracelet/bubbles/key"
 
 // ListKeyMap defines key bindings for the list view.
 type ListKeyMap struct {
-	Up      key.Binding
-	Down    key.Binding
-	Filter  key.Binding
-	Refresh key.Binding
-	Open    key.Binding
-	Enter   key.Binding
-	Quit    key.Binding
-	Escape  key.Binding
+	Up       key.Binding
+	Down     key.Binding
+	PageUp   key.Binding
+	PageDown key.Binding
+	Filter   key.Binding
+	Refresh  key.Binding
+	Open     key.Binding
+	Enter    key.Binding
+	Quit     key.Binding
+	Escape   key.Binding
 }
 
 var listKeys = ListKeyMap{
@@ -22,6 +24,14 @@ var listKeys = ListKeyMap{
 	Down: key.NewBinding(
 		key.WithKeys("down", "j"),
 		key.WithHelp("↓/j", "down"),
+	),
+	PageUp: key.NewBinding(
+		key.WithKeys("pgup"),
+		key.WithHelp("pgup", "page up"),
+	),
+	PageDown: key.NewBinding(
+		key.WithKeys("pgdown"),
+		key.WithHelp("pgdown", "page down"),
 	),
 	Filter: key.NewBinding(
 		key.WithKeys("/"),
