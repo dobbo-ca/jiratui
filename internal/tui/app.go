@@ -281,58 +281,73 @@ func (a App) View() string {
 	b.WriteString(a.renderStatusBar())
 	b.WriteString("\n")
 
-	// Main content
-	switch a.state {
-	case stateLoading:
-		loadingStyle := lipgloss.NewStyle().
-			PaddingTop(a.height/2 - 2).
-			PaddingLeft(a.width/2 - 12).
-			Foreground(colorText)
-		b.WriteString(loadingStyle.Render(a.spinner.View() + " Fetching issues..."))
-	case stateList:
-		if a.err != nil {
-			errStyle := lipgloss.NewStyle().
-				Foreground(colorError).
-				PaddingLeft(2).
-				PaddingTop(1)
-			b.WriteString(errStyle.Render("Error: " + a.err.Error()))
-		} else {
-			// Always split: list on left, detail on right
-			listW := a.listWidth
-			detailW := a.detailPaneWidth()
-			contentH := a.height - 2
-
-			leftList := a.list.ViewWithWidth(listW, contentH)
-
-			borderLines := make([]string, contentH)
-			borderStyle := lipgloss.NewStyle().Foreground(colorBorder)
-			for i := range borderLines {
-				borderLines[i] = borderStyle.Render("│")
-			}
-			border := strings.Join(borderLines, "\n")
-
-			var right string
-			if a.detailLoading {
-				loadStyle := lipgloss.NewStyle().
-					Width(detailW).
-					Height(contentH).
-					Foreground(colorText).
-					Align(lipgloss.Center, lipgloss.Center)
-				right = loadStyle.Render(a.spinner.View() + " Loading issue...")
-			} else if a.detail != nil {
-				right = a.detail.View()
-			} else {
-				// No issue selected
-				emptyStyle := lipgloss.NewStyle().
-					Width(detailW).
-					Height(contentH).
-					Foreground(colorSubtle).
-					Align(lipgloss.Center, lipgloss.Center)
-				right = emptyStyle.Render("No issues found")
-			}
-
-			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftList, border, right))
+	// Main content — always split layout
+	if a.err != nil {
+		errStyle := lipgloss.NewStyle().
+			Foreground(colorError).
+			PaddingLeft(2).
+			PaddingTop(1)
+		b.WriteString(errStyle.Render("Error: " + a.err.Error()))
+	} else {
+		listW := a.listWidth
+		detailW := a.detailPaneWidth()
+		contentH := a.height - 2
+		if contentH < 1 {
+			contentH = 1
 		}
+
+		// Left pane: list (or loading placeholder)
+		var left string
+		if a.state == stateLoading {
+			loadStyle := lipgloss.NewStyle().
+				Width(listW).
+				Height(contentH).
+				Foreground(colorText).
+				Align(lipgloss.Center, lipgloss.Center)
+			left = loadStyle.Render(a.spinner.View() + " Loading...")
+		} else {
+			left = a.list.ViewWithWidth(listW, contentH)
+		}
+
+		// Border
+		borderLines := make([]string, contentH)
+		borderStyle := lipgloss.NewStyle().Foreground(colorBorder)
+		for i := range borderLines {
+			borderLines[i] = borderStyle.Render("│")
+		}
+		border := strings.Join(borderLines, "\n")
+
+		// Right pane: detail
+		var right string
+		if a.state == stateLoading || a.detailLoading {
+			loadStyle := lipgloss.NewStyle().
+				Width(detailW).
+				Height(contentH).
+				Foreground(colorText).
+				Align(lipgloss.Center, lipgloss.Center)
+			msg := " Loading..."
+			if a.detailLoading {
+				msg = a.spinner.View() + " Loading issue..."
+			}
+			right = loadStyle.Render(msg)
+		} else if a.detail != nil {
+			// Constrain detail output to exact pane dimensions
+			right = lipgloss.NewStyle().
+				Width(detailW).
+				MaxWidth(detailW).
+				Height(contentH).
+				MaxHeight(contentH).
+				Render(a.detail.View())
+		} else {
+			emptyStyle := lipgloss.NewStyle().
+				Width(detailW).
+				Height(contentH).
+				Foreground(colorSubtle).
+				Align(lipgloss.Center, lipgloss.Center)
+			right = emptyStyle.Render("No issues found")
+		}
+
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, left, border, right))
 	}
 
 	// Pad to push help bar to bottom

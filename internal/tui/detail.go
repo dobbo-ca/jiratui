@@ -326,8 +326,8 @@ func joinFieldsHorizontal(fields ...string) string {
 
 func (d Detail) renderDetailsTab() string {
 	var b strings.Builder
-	w := d.width
-	gap := 1
+	w := d.width - 1 // right margin to prevent overflow
+	gap := 0
 
 	// Row 1: Key + Title
 	keyW := 20
