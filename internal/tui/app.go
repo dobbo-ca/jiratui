@@ -413,12 +413,13 @@ func (a App) View() string {
 	}
 
 	allLines := make([]string, 0, a.height)
-	allLines = append(allLines, contentLines...)
-	allLines = append(allLines, a.renderHelpBar())
 
-	// Overlay help if visible
 	if a.showHelp {
-		a.overlayHelp(allLines)
+		// Full-screen help view
+		allLines = strings.Split(a.renderHelpScreen(), "\n")
+	} else {
+		allLines = append(allLines, contentLines...)
+		allLines = append(allLines, a.renderHelpBar())
 	}
 
 	// Truncate every line to terminal width and cap total lines
@@ -435,87 +436,60 @@ func (a App) View() string {
 }
 
 
-// overlayHelp renders a centered help box over the given lines.
-func (a App) overlayHelp(lines []string) {
-	helpText := []string{
-		"",
-		"  Keyboard Shortcuts",
-		"  ──────────────────────────────",
-		"",
-		"  Navigation",
-		"    j/↓          Move down",
-		"    k/↑          Move up",
-		"    PgDn/PgUp    Page down/up",
-		"",
-		"  Detail Tabs",
-		"    1-5          Switch tab",
-		"",
-		"  Actions",
-		"    /            Filter issues",
-		"    o            Open in browser",
-		"    r            Refresh issues",
-		"    q            Quit",
-		"    ?            Toggle this help",
-		"",
-		"  Mouse",
-		"    Click        Select issue",
-		"    Scroll       Navigate list",
-		"    Drag border  Resize panes",
-		"    Drag header  Resize columns",
-		"",
-		"  Press any key to close",
-		"",
+// renderHelpScreen renders a full-screen centered help view.
+func (a App) renderHelpScreen() string {
+	w := a.usableWidth()
+
+	keyStyle := lipgloss.NewStyle().Foreground(colorAccent).Width(16)
+	descStyle := lipgloss.NewStyle().Foreground(colorText)
+	sectionStyle := lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
+	subtleStyle := lipgloss.NewStyle().Foreground(colorSubtle)
+
+	var box strings.Builder
+
+	section := func(name string) {
+		box.WriteString("\n")
+		box.WriteString("  " + sectionStyle.Render(name) + "\n")
+	}
+	entry := func(key, desc string) {
+		box.WriteString("  " + keyStyle.Render(key) + descStyle.Render(desc) + "\n")
 	}
 
-	boxW := 40
-	boxH := len(helpText)
-	startY := (a.height - boxH) / 2
-	startX := (a.usableWidth() - boxW) / 2
-	if startY < 0 {
-		startY = 0
-	}
-	if startX < 0 {
-		startX = 0
-	}
+	box.WriteString("\n")
+	box.WriteString("  " + lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("Keyboard Shortcuts") + "\n")
 
-	bdr := lipgloss.NewStyle().Foreground(colorAccent)
-	bg := lipgloss.NewStyle().Background(colorHeaderBg).Foreground(colorText)
+	section("Navigation")
+	entry("j / ↓", "Move down")
+	entry("k / ↑", "Move up")
+	entry("PgDn / PgUp", "Page down / up")
 
-	// Top border
-	topBorder := bdr.Render("╭" + strings.Repeat("─", boxW-2) + "╮")
-	botBorder := bdr.Render("╰" + strings.Repeat("─", boxW-2) + "╯")
+	section("Detail Tabs")
+	entry("1-5", "Switch tab")
 
-	for i, text := range helpText {
-		row := startY + i
-		if row < 0 || row >= len(lines) {
-			continue
-		}
-		var line string
-		if i == 0 {
-			line = topBorder
-		} else if i == boxH-1 {
-			line = botBorder
-		} else {
-			// Pad/truncate content to fit box
-			content := text
-			contentW := boxW - 4 // borders + padding
-			if len(content) > contentW {
-				content = content[:contentW]
-			}
-			pad := contentW - len(content)
-			if pad < 0 {
-				pad = 0
-			}
-			line = bdr.Render("│") + bg.Render(" "+content+strings.Repeat(" ", pad)+" ") + bdr.Render("│")
-		}
+	section("Actions")
+	entry("/", "Filter issues")
+	entry("o", "Open in browser")
+	entry("r", "Refresh issues")
+	entry("q", "Quit")
+	entry("?", "Toggle this help")
 
-		// Splice the overlay into the line at startX
-		original := lines[row]
-		// Build: original[0:startX] + overlay + original[startX+boxW:]
-		// Use visual widths for correct ANSI handling
-		prefix := truncateAnsi(original, startX)
-		lines[row] = prefix + line
-	}
+	section("Mouse")
+	entry("Click", "Select issue")
+	entry("Scroll", "Navigate list")
+	entry("Drag border", "Resize panes")
+	entry("Drag header", "Resize columns")
+
+	box.WriteString("\n")
+	box.WriteString("  " + subtleStyle.Render("Press any key to close") + "\n")
+
+	// Center the box
+	rendered := lipgloss.NewStyle().
+		Width(w).
+		Height(a.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(box.String())
+
+	return rendered
 }
 
 func (a App) renderHelpBar() string {
