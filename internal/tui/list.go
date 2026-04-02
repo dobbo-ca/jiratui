@@ -455,24 +455,29 @@ func (l List) ViewWithWidth(width, height int) string {
 	if keyW > width-10 {
 		keyW = width - 10
 	}
-	summaryW := width - keyW - 2 // 2 for leading space + gap
+	summaryW := width - keyW - 3 // leading space + divider + space
 	if summaryW < 10 {
 		summaryW = 10
 	}
 
+	divStyle := lipgloss.NewStyle().Foreground(colorBorder)
+	div := divStyle.Render("│")
+
 	// Header
 	headerStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	header := fmt.Sprintf(" %s %s",
-		padRight("Key", keyW),
-		padRight("Summary", summaryW),
-	)
-	b.WriteString(headerStyle.Render(header))
+	keyHeader := headerStyle.Render(" " + padRight("Key", keyW))
+	sumHeader := headerStyle.Render(" " + padRight("Summary", summaryW))
+	b.WriteString(keyHeader + div + sumHeader)
 	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(colorBorder).Render(strings.Repeat("─", width)))
+
+	// Separator with ┼ at the column boundary
+	sepLeft := strings.Repeat("─", keyW+1)
+	sepRight := strings.Repeat("─", width-keyW-2)
+	b.WriteString(divStyle.Render(sepLeft + "┼" + sepRight))
 	b.WriteString("\n")
 
 	// Rows
-	vis := height - 2 // header + separator
+	vis := height - 2
 	if vis < 1 {
 		vis = 1
 	}
@@ -483,16 +488,16 @@ func (l List) ViewWithWidth(width, height int) string {
 
 	for i := l.offset; i < end; i++ {
 		issue := l.filtered[i]
-		row := fmt.Sprintf(" %s %s",
-			padRight(truncStr(issue.Key, keyW), keyW),
-			padRight(truncStr(issue.Summary, summaryW), summaryW),
-		)
+		keyText := " " + padRight(truncStr(issue.Key, keyW), keyW)
+		sumText := " " + padRight(truncStr(issue.Summary, summaryW), summaryW)
 
 		if i == l.cursor {
-			b.WriteString(lipgloss.NewStyle().Foreground(colorText).Background(colorSelection).Render(row))
+			sel := lipgloss.NewStyle().Foreground(colorText).Background(colorSelection)
+			b.WriteString(sel.Render(keyText) + div + sel.Render(sumText))
 		} else {
 			urgency := rowColor(issue)
-			b.WriteString(lipgloss.NewStyle().Foreground(urgency).Render(row))
+			rowStyle := lipgloss.NewStyle().Foreground(urgency)
+			b.WriteString(rowStyle.Render(keyText) + div + rowStyle.Render(sumText))
 		}
 		if i < end-1 {
 			b.WriteString("\n")
