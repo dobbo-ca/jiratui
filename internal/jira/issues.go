@@ -17,7 +17,7 @@ type SearchResult struct {
 
 // SearchMyIssues fetches issues assigned to the current user.
 func (c *Client) SearchMyIssues(maxResults int, pageToken string) (*SearchResult, error) {
-	jql := "assignee = currentUser() ORDER BY updated DESC"
+	jql := "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
 	return c.searchIssues(jql, maxResults, pageToken)
 }
 

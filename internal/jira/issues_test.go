@@ -55,7 +55,7 @@ func TestSearchMyIssues(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		jql := r.URL.Query().Get("jql")
-		if jql != "assignee = currentUser() ORDER BY updated DESC" {
+		if jql != "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC" {
 			t.Errorf("unexpected JQL: %s", jql)
 		}
 		w.Header().Set("Content-Type", "application/json")
