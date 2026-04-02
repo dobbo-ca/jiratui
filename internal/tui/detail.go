@@ -403,7 +403,7 @@ func (d Detail) renderDetailsTab() string {
 		parentColor = colorAccent
 	}
 
-	updatedStr := relativeTime(d.issue.Updated)
+	updatedStr := d.issue.Updated.Format("2006-01-02 15:04")
 
 	row4 := joinFieldsHorizontal(
 		renderField("Parent", parentStr, col3W, parentColor),
