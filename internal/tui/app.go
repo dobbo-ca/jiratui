@@ -3,13 +3,53 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/christopherdobbyn/jiratui/internal/jira"
 	"github.com/christopherdobbyn/jiratui/internal/models"
+	"github.com/muesli/ansi"
 )
+
+// truncateAnsi truncates a string with ANSI escape codes to a given visual width.
+func truncateAnsi(s string, maxWidth int) string {
+	if lipgloss.Width(s) <= maxWidth {
+		return s
+	}
+	var (
+		result strings.Builder
+		vis    int
+		i      int
+	)
+	for i < len(s) {
+		// Skip ANSI escape sequences
+		if s[i] == '\x1b' {
+			j := i
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			if j < len(s) {
+				j++ // include the 'm'
+			}
+			result.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		w := ansi.PrintableRuneWidth(string(r))
+		if vis+w > maxWidth {
+			break
+		}
+		result.WriteRune(r)
+		vis += w
+		i += size
+	}
+	// Append reset to close any open ANSI sequences
+	result.WriteString("\x1b[0m")
+	return result.String()
+}
 
 type state int
 
@@ -340,13 +380,18 @@ func (a App) View() string {
 		content = lipgloss.JoinHorizontal(lipgloss.Top, left, border, right)
 	}
 
-	// Force content to exactly contentH lines — truncate or pad
+	// Force content to exactly contentH lines, each at most a.width wide
 	contentLines := strings.Split(content, "\n")
 	if len(contentLines) > contentH {
 		contentLines = contentLines[:contentH]
 	}
 	for len(contentLines) < contentH {
 		contentLines = append(contentLines, "")
+	}
+	for i, line := range contentLines {
+		if lipgloss.Width(line) > a.width {
+			contentLines[i] = truncateAnsi(line, a.width)
+		}
 	}
 
 	return a.renderStatusBar() + "\n" +
