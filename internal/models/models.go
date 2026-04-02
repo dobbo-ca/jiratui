@@ -45,6 +45,14 @@ type IssueSummary struct {
 	Status  Status
 }
 
+type Attachment struct {
+	ID       string
+	Filename string
+	MimeType string
+	Size     int
+	URL      string
+}
+
 type Issue struct {
 	Key         string
 	Summary     string
@@ -62,6 +70,7 @@ type Issue struct {
 	Sprint      string
 	Subtasks    []IssueSummary
 	Links       []IssueLink
+	Attachments []Attachment
 	Comments    []Comment
 	ProjectKey  string
 	ProjectName string

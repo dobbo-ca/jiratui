@@ -61,7 +61,7 @@ func (c *Client) searchIssues(jql string, maxResults int, pageToken string) (*Se
 // GetIssue fetches a single issue with full detail including comments.
 func (c *Client) GetIssue(key string) (*models.Issue, error) {
 	params := url.Values{}
-	params.Set("fields", "summary,description,status,priority,issuetype,assignee,reporter,labels,created,updated,duedate,project,subtasks,issuelinks,parent,sprint,comment")
+	params.Set("fields", "summary,description,status,priority,issuetype,assignee,reporter,labels,created,updated,duedate,project,subtasks,issuelinks,parent,sprint,comment,attachment")
 
 	path := "/rest/api/3/issue/" + key + "?" + params.Encode()
 	data, err := c.get(path)
@@ -172,6 +172,18 @@ func mapIssue(ji jiraIssue, baseURL string) models.Issue {
 			}
 		}
 		issue.Links[i] = link
+	}
+
+	// Map attachments
+	issue.Attachments = make([]models.Attachment, len(f.Attachment))
+	for i, ja := range f.Attachment {
+		issue.Attachments[i] = models.Attachment{
+			ID:       ja.ID,
+			Filename: ja.Filename,
+			MimeType: ja.MimeType,
+			Size:     ja.Size,
+			URL:      ja.Content,
+		}
 	}
 
 	// Map comments

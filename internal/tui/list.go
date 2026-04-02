@@ -13,9 +13,19 @@ import (
 	"github.com/pkg/browser"
 )
 
-// openIssueMsg is sent when the user selects an issue to open in detail view.
-type openIssueMsg struct {
+// cursorChangedMsg is sent when the selected issue changes in the list.
+type cursorChangedMsg struct {
 	issueKey string
+}
+
+func (l List) emitCursorChanged() tea.Cmd {
+	if l.cursor < len(l.filtered) {
+		key := l.filtered[l.cursor].Key
+		return func() tea.Msg {
+			return cursorChangedMsg{issueKey: key}
+		}
+	}
+	return nil
 }
 
 // Column widths.
@@ -245,11 +255,11 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 				l.filtered = l.issues
 				l.cursor = 0
 				l.offset = 0
-				return l, nil
+				return l, l.emitCursorChanged()
 			case msg.Type == tea.KeyEnter:
 				l.filtering = false
 				l.filter.Blur()
-				return l, nil
+				return l, l.emitCursorChanged()
 			default:
 				var cmd tea.Cmd
 				l.filter, cmd = l.filter.Update(msg)
@@ -270,55 +280,72 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 				_ = browser.OpenURL(l.filtered[l.cursor].BrowseURL)
 			}
 			return l, nil
-		case key.Matches(msg, listKeys.Enter):
-			if l.cursor < len(l.filtered) {
-				return l, func() tea.Msg {
-					return openIssueMsg{issueKey: l.filtered[l.cursor].Key}
-				}
-			}
-			return l, nil
 		case key.Matches(msg, listKeys.Down):
+			prev := l.cursor
 			if l.cursor < len(l.filtered)-1 {
 				l.cursor++
 				l.clampCursor()
 			}
+			if l.cursor != prev {
+				return l, l.emitCursorChanged()
+			}
 			return l, nil
 		case key.Matches(msg, listKeys.Up):
+			prev := l.cursor
 			if l.cursor > 0 {
 				l.cursor--
 				l.clampCursor()
 			}
+			if l.cursor != prev {
+				return l, l.emitCursorChanged()
+			}
 			return l, nil
 		case key.Matches(msg, listKeys.PageDown):
+			prev := l.cursor
 			vis := l.visibleRows()
 			l.cursor += vis
 			if l.cursor >= len(l.filtered) {
 				l.cursor = len(l.filtered) - 1
 			}
 			l.clampCursor()
+			if l.cursor != prev {
+				return l, l.emitCursorChanged()
+			}
 			return l, nil
 		case key.Matches(msg, listKeys.PageUp):
+			prev := l.cursor
 			vis := l.visibleRows()
 			l.cursor -= vis
 			if l.cursor < 0 {
 				l.cursor = 0
 			}
 			l.clampCursor()
+			if l.cursor != prev {
+				return l, l.emitCursorChanged()
+			}
 			return l, nil
 		}
 
 	case tea.MouseMsg:
 		switch msg.Button {
 		case tea.MouseButtonWheelDown:
+			prev := l.cursor
 			if l.cursor < len(l.filtered)-1 {
 				l.cursor++
 				l.clampCursor()
 			}
+			if l.cursor != prev {
+				return l, l.emitCursorChanged()
+			}
 			return l, nil
 		case tea.MouseButtonWheelUp:
+			prev := l.cursor
 			if l.cursor > 0 {
 				l.cursor--
 				l.clampCursor()
+			}
+			if l.cursor != prev {
+				return l, l.emitCursorChanged()
 			}
 			return l, nil
 		case tea.MouseButtonLeft:
@@ -329,13 +356,12 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 			}
 			clickedRow := msg.Y - headerOffset + l.offset
 			if clickedRow >= 0 && clickedRow < len(l.filtered) {
-				if l.cursor == clickedRow {
-					return l, func() tea.Msg {
-						return openIssueMsg{issueKey: l.filtered[l.cursor].Key}
-					}
-				}
+				prev := l.cursor
 				l.cursor = clickedRow
 				l.clampCursor()
+				if l.cursor != prev {
+					return l, l.emitCursorChanged()
+				}
 			}
 			return l, nil
 		}

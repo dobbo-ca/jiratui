@@ -30,7 +30,16 @@ type jiraFields struct {
 	Subtasks    []jiraIssue      `json:"subtasks"`
 	IssueLinks  []jiraIssueLink  `json:"issuelinks"`
 	Comment     *jiraCommentPage `json:"comment"`
+	Attachment  []jiraAttachment `json:"attachment"`
 	Project     jiraProject      `json:"project"`
+}
+
+type jiraAttachment struct {
+	ID       string `json:"id"`
+	Filename string `json:"filename"`
+	MimeType string `json:"mimeType"`
+	Size     int    `json:"size"`
+	Content  string `json:"content"` // download URL
 }
 
 // jiraADF represents Atlassian Document Format. We extract plain text from it.

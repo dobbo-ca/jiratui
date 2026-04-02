@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,8 +16,6 @@ type state int
 const (
 	stateLoading state = iota
 	stateList
-	stateDetail
-	stateDetailLoading
 )
 
 // listPaneWidth returns the width of the list pane in split mode (~35% of terminal).
@@ -33,6 +30,10 @@ func (a App) listPaneWidth() int {
 	return w
 }
 
+func (a App) detailPaneWidth() int {
+	return a.width - a.listPaneWidth() - 1
+}
+
 // issuesMsg carries fetched issues into the model.
 type issuesMsg struct {
 	issues []models.Issue
@@ -45,7 +46,8 @@ type errMsg struct {
 
 // issueDetailMsg carries a fetched issue detail into the model.
 type issueDetailMsg struct {
-	issue models.Issue
+	issue  models.Issue
+	forKey string // which issue key this detail is for
 }
 
 func fetchIssueDetail(client *jira.Client, key string) tea.Cmd {
@@ -54,21 +56,23 @@ func fetchIssueDetail(client *jira.Client, key string) tea.Cmd {
 		if err != nil {
 			return errMsg{err: err}
 		}
-		return issueDetailMsg{issue: *issue}
+		return issueDetailMsg{issue: *issue, forKey: key}
 	}
 }
 
 // App is the root Bubble Tea model.
 type App struct {
-	state       state
-	list        List
-	detail      Detail
-	spinner     spinner.Model
-	client      *jira.Client
-	profileName string
-	err         error
-	width       int
-	height      int
+	state         state
+	list          List
+	detail        *Detail
+	detailLoading bool
+	detailKey     string // issue key currently shown/loading in detail
+	spinner       spinner.Model
+	client        *jira.Client
+	profileName   string
+	err           error
+	width         int
+	height        int
 }
 
 // NewApp creates the root TUI model.
@@ -107,27 +111,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width = msg.Width
 		a.height = msg.Height
 		if a.state == stateList {
-			var cmd tea.Cmd
-			a.list, cmd = a.list.Update(msg)
-			return a, cmd
-		}
-		if a.state == stateDetail {
-			// Update list for split view
 			a.list.width = msg.Width
 			a.list.height = msg.Height
 			a.list.clampCursor()
-
-			detailWidth := msg.Width - a.listPaneWidth() - 1
-			adjusted := tea.WindowSizeMsg{Width: detailWidth, Height: msg.Height - 2}
-			var cmd tea.Cmd
-			a.detail, cmd = a.detail.Update(adjusted)
-			return a, cmd
-		}
-		if a.state == stateDetailLoading {
-			a.list.width = msg.Width
-			a.list.height = msg.Height
-			a.list.clampCursor()
-			return a, nil
+			if a.detail != nil {
+				detailWidth := a.detailPaneWidth()
+				adjusted := tea.WindowSizeMsg{Width: detailWidth, Height: msg.Height - 2}
+				d := *a.detail
+				d, _ = d.Update(adjusted)
+				a.detail = &d
+			}
 		}
 		return a, nil
 
@@ -135,15 +128,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Global quit — always works
 		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
-		}
-		if a.state == stateDetail {
-			if key.Matches(msg, detailKeys.Escape) {
-				a.state = stateList
-				return a, nil
-			}
-			var cmd tea.Cmd
-			a.detail, cmd = a.detail.Update(msg)
-			return a, cmd
 		}
 		if a.state == stateList {
 			// Quit only when not filtering
@@ -154,33 +138,60 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "r" && !a.list.filtering {
 				a.state = stateLoading
 				a.err = nil
+				a.detail = nil
+				a.detailKey = ""
 				return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client))
+			}
+			// Tab switching — forward 1-5 to detail if it exists
+			if a.detail != nil && !a.list.filtering {
+				if msg.String() >= "1" && msg.String() <= "6" {
+					d := *a.detail
+					d, _ = d.Update(msg)
+					a.detail = &d
+					return a, nil
+				}
 			}
 		}
 
 	case issuesMsg:
 		a.list = NewList(msg.issues, a.width, a.height)
 		a.state = stateList
+		// Auto-fetch first issue detail
+		if len(msg.issues) > 0 {
+			a.detailLoading = true
+			a.detailKey = msg.issues[0].Key
+			return a, tea.Batch(a.spinner.Tick, fetchIssueDetail(a.client, msg.issues[0].Key))
+		}
+		return a, nil
+
+	case cursorChangedMsg:
+		// Only fetch if it's a different issue
+		if msg.issueKey != a.detailKey {
+			a.detailLoading = true
+			a.detailKey = msg.issueKey
+			return a, tea.Batch(a.spinner.Tick, fetchIssueDetail(a.client, msg.issueKey))
+		}
+		return a, nil
+
+	case issueDetailMsg:
+		// Only accept if this is still the issue we're waiting for
+		if msg.forKey == a.detailKey {
+			contentHeight := a.height - 2
+			detailWidth := a.detailPaneWidth()
+			d := NewDetail(msg.issue, detailWidth, contentHeight)
+			a.detail = &d
+			a.detailLoading = false
+		}
 		return a, nil
 
 	case errMsg:
 		a.err = msg.err
 		a.state = stateList
-		return a, nil
-
-	case openIssueMsg:
-		a.state = stateDetailLoading
-		return a, tea.Batch(a.spinner.Tick, fetchIssueDetail(a.client, msg.issueKey))
-
-	case issueDetailMsg:
-		contentHeight := a.height - 2
-		detailWidth := a.width - a.listPaneWidth() - 1
-		a.detail = NewDetail(msg.issue, detailWidth, contentHeight)
-		a.state = stateDetail
+		a.detailLoading = false
 		return a, nil
 
 	case spinner.TickMsg:
-		if a.state == stateLoading || a.state == stateDetailLoading {
+		if a.state == stateLoading || a.detailLoading {
 			var cmd tea.Cmd
 			a.spinner, cmd = a.spinner.Update(msg)
 			return a, cmd
@@ -188,34 +199,31 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// Forward remaining messages to list
 	if a.state == stateList {
-		var cmd tea.Cmd
-		a.list, cmd = a.list.Update(msg)
-		return a, cmd
-	}
-
-	if a.state == stateDetail {
-		// In split mode, route mouse events by X position
+		// Route mouse events by pane in split mode
 		if mouseMsg, ok := msg.(tea.MouseMsg); ok {
 			listW := a.listPaneWidth()
 			if mouseMsg.X < listW {
-				// Mouse is in the list pane — adjust Y for status bar
 				adjusted := mouseMsg
-				adjusted.Y = mouseMsg.Y - 1 // account for status bar
+				adjusted.Y = mouseMsg.Y - 1
 				var cmd tea.Cmd
 				a.list, cmd = a.list.Update(adjusted)
 				return a, cmd
 			}
-			// Mouse is in the detail pane — adjust X for pane offset
-			adjusted := mouseMsg
-			adjusted.X = mouseMsg.X - listW - 1 // subtract list + border
-			adjusted.Y = mouseMsg.Y - 1         // account for status bar
-			var cmd tea.Cmd
-			a.detail, cmd = a.detail.Update(adjusted)
-			return a, cmd
+			// Mouse in detail pane
+			if a.detail != nil {
+				adjusted := mouseMsg
+				adjusted.X = mouseMsg.X - listW - 1
+				adjusted.Y = mouseMsg.Y - 1
+				d := *a.detail
+				d, _ = d.Update(adjusted)
+				a.detail = &d
+			}
+			return a, nil
 		}
 		var cmd tea.Cmd
-		a.detail, cmd = a.detail.Update(msg)
+		a.list, cmd = a.list.Update(msg)
 		return a, cmd
 	}
 
@@ -246,36 +254,42 @@ func (a App) View() string {
 				PaddingTop(1)
 			b.WriteString(errStyle.Render("Error: " + a.err.Error()))
 		} else {
-			b.WriteString(a.list.View())
+			// Always split: list on left, detail on right
+			listW := a.listPaneWidth()
+			detailW := a.detailPaneWidth()
+			contentH := a.height - 2
+
+			leftList := a.list.ViewWithWidth(listW, contentH)
+
+			borderLines := make([]string, contentH)
+			borderStyle := lipgloss.NewStyle().Foreground(colorBorder)
+			for i := range borderLines {
+				borderLines[i] = borderStyle.Render("│")
+			}
+			border := strings.Join(borderLines, "\n")
+
+			var right string
+			if a.detailLoading {
+				loadStyle := lipgloss.NewStyle().
+					Width(detailW).
+					Height(contentH).
+					Foreground(colorText).
+					Align(lipgloss.Center, lipgloss.Center)
+				right = loadStyle.Render(a.spinner.View() + " Loading issue...")
+			} else if a.detail != nil {
+				right = a.detail.View()
+			} else {
+				// No issue selected
+				emptyStyle := lipgloss.NewStyle().
+					Width(detailW).
+					Height(contentH).
+					Foreground(colorSubtle).
+					Align(lipgloss.Center, lipgloss.Center)
+				right = emptyStyle.Render("No issues found")
+			}
+
+			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftList, border, right))
 		}
-	case stateDetail, stateDetailLoading:
-		// Split: list on left, detail on right
-		listW := a.listPaneWidth()
-		detailW := a.width - listW - 1 // 1 for border
-		contentH := a.height - 2       // status + help bars
-
-		leftList := a.list.ViewWithWidth(listW, contentH)
-
-		borderLines := make([]string, contentH)
-		borderStyle := lipgloss.NewStyle().Foreground(colorBorder)
-		for i := range borderLines {
-			borderLines[i] = borderStyle.Render("│")
-		}
-		border := strings.Join(borderLines, "\n")
-
-		var right string
-		if a.state == stateDetailLoading {
-			loadStyle := lipgloss.NewStyle().
-				Width(detailW).
-				Height(contentH).
-				Foreground(colorText).
-				Align(lipgloss.Center, lipgloss.Center)
-			right = loadStyle.Render(a.spinner.View() + " Loading issue...")
-		} else {
-			right = a.detail.View()
-		}
-
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftList, border, right))
 	}
 
 	// Pad to push help bar to bottom
@@ -327,10 +341,8 @@ func (a App) renderHelpBar() string {
 	switch {
 	case a.state == stateList && a.list.filtering:
 		help = "enter confirm · esc clear filter"
-	case a.state == stateDetail:
-		help = "esc back · 1-5 tabs · j/k scroll · o open in browser"
 	default:
-		help = "↑/k up · ↓/j down · enter open · / filter · o browser · r refresh · q quit"
+		help = "↑/k up · ↓/j down · 1-6 tabs · / filter · o browser · r refresh · q quit"
 	}
 
 	rendered := helpStyle.Render(help)

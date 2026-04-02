@@ -11,7 +11,6 @@ type ListKeyMap struct {
 	Filter   key.Binding
 	Refresh  key.Binding
 	Open     key.Binding
-	Enter    key.Binding
 	Quit     key.Binding
 	Escape   key.Binding
 }
@@ -45,10 +44,6 @@ var listKeys = ListKeyMap{
 		key.WithKeys("o"),
 		key.WithHelp("o", "open in browser"),
 	),
-	Enter: key.NewBinding(
-		key.WithKeys("enter"),
-		key.WithHelp("enter", "open"),
-	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
 		key.WithHelp("q", "quit"),
@@ -68,6 +63,7 @@ type DetailKeyMap struct {
 	Tab3   key.Binding
 	Tab4   key.Binding
 	Tab5   key.Binding
+	Tab6   key.Binding
 	Down   key.Binding
 	Up     key.Binding
 }
@@ -86,6 +82,7 @@ var detailKeys = DetailKeyMap{
 	Tab3: key.NewBinding(key.WithKeys("3")),
 	Tab4: key.NewBinding(key.WithKeys("4")),
 	Tab5: key.NewBinding(key.WithKeys("5")),
+	Tab6: key.NewBinding(key.WithKeys("6")),
 	Down: key.NewBinding(
 		key.WithKeys("down", "j"),
 		key.WithHelp("j/↓", "scroll down"),

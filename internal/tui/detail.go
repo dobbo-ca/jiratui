@@ -20,6 +20,7 @@ const (
 	tabComments
 	tabSubtasks
 	tabLinks
+	tabAttachments
 )
 
 // Detail is the Bubble Tea model for the issue detail view.
@@ -60,6 +61,9 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 		case key.Matches(msg, detailKeys.Tab5):
 			d.activeTab = tabLinks
 			d.scrollY = 0
+		case key.Matches(msg, detailKeys.Tab6):
+			d.activeTab = tabAttachments
+			d.scrollY = 0
 		case key.Matches(msg, detailKeys.Down):
 			d.scrollY++
 		case key.Matches(msg, detailKeys.Up):
@@ -75,7 +79,7 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 		switch msg.Button {
 		case tea.MouseButtonLeft:
 			// Tab bar click detection — y=0 is the tab bar
-			if msg.Y == 0 {
+			if msg.Y <= 1 {
 				// Calculate approximate tab positions based on rendered label widths
 				// Labels: " 1:Details " (11), " 2:Description " (16), " 3:Comments(N) " (~16), " 4:Subtasks(N) " (~16), " 5:Links(N) " (~14)
 				tabEnds := []int{11, 27, 43, 59, 73}
@@ -136,6 +140,8 @@ func (d Detail) View() string {
 		content = d.renderSubtasksTab()
 	case tabLinks:
 		content = d.renderLinksTab()
+	case tabAttachments:
+		content = d.renderAttachmentsTab()
 	}
 
 	b.WriteString(d.applyScroll(content))
@@ -147,33 +153,43 @@ func (d Detail) renderTabBar() string {
 	activeStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	inactiveStyle := lipgloss.NewStyle().Foreground(colorSubtle)
 
-	tabs := []struct {
-		label string
-		tab   detailTab
-	}{
-		{"1:Details", tabDetails},
-		{"2:Description", tabDescription},
-		{fmt.Sprintf("3:Comments(%d)", len(d.issue.Comments)), tabComments},
-		{fmt.Sprintf("4:Subtasks(%d)", len(d.issue.Subtasks)), tabSubtasks},
-		{fmt.Sprintf("5:Links(%d)", len(d.issue.Links)), tabLinks},
+	labels := []string{
+		"1:Details",
+		"2:Description",
+		fmt.Sprintf("3:Comments(%d)", len(d.issue.Comments)),
+		fmt.Sprintf("4:Subtasks(%d)", len(d.issue.Subtasks)),
+		fmt.Sprintf("5:Links(%d)", len(d.issue.Links)),
+		fmt.Sprintf("6:Attachments(%d)", len(d.issue.Attachments)),
 	}
 
-	var parts []string
-	for _, t := range tabs {
-		if t.tab == d.activeTab {
-			parts = append(parts, activeStyle.Render(t.label))
+	var tabLine strings.Builder
+	var underLine strings.Builder
+	tabLine.WriteString(" ")
+	underLine.WriteString(" ")
+
+	sep := "  "
+	for i, label := range labels {
+		if i > 0 {
+			tabLine.WriteString(sep)
+			underLine.WriteString(sep)
+		}
+		w := len(label)
+		if detailTab(i) == d.activeTab {
+			tabLine.WriteString(activeStyle.Render(label))
+			underLine.WriteString(lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Repeat("━", w)))
 		} else {
-			parts = append(parts, inactiveStyle.Render(t.label))
+			tabLine.WriteString(inactiveStyle.Render(label))
+			underLine.WriteString(strings.Repeat(" ", w))
 		}
 	}
 
-	return " " + strings.Join(parts, "  ")
+	return tabLine.String() + "\n" + underLine.String()
 }
 
 func (d Detail) applyScroll(content string) string {
 	lines := strings.Split(content, "\n")
-	// Available height: total height minus status bar(1), tab bar(1), separator(1), help bar(1)
-	viewHeight := d.height - 4
+	// Available height: total height minus tab bar(2), separator(1)
+	viewHeight := d.height - 3
 	if viewHeight < 1 {
 		viewHeight = 1
 	}
@@ -369,6 +385,35 @@ func (d Detail) renderLinksTab() string {
 		b.WriteString("  " + typeStyle.Render(relType) + " " + accentStyle.Render(issueKey) + " " + textStyle.Render(summary) + " " + StyledStatus(status) + "\n")
 	}
 	return b.String()
+}
+
+func (d Detail) renderAttachmentsTab() string {
+	if len(d.issue.Attachments) == 0 {
+		subtle := lipgloss.NewStyle().Foreground(colorSubtle)
+		return "  " + subtle.Render("No attachments.")
+	}
+
+	nameStyle := lipgloss.NewStyle().Foreground(colorAccent)
+	sizeStyle := lipgloss.NewStyle().Foreground(colorSubtle)
+	typeStyle := lipgloss.NewStyle().Foreground(colorInfo)
+
+	var b strings.Builder
+	for _, att := range d.issue.Attachments {
+		sizeStr := formatFileSize(att.Size)
+		b.WriteString("  " + nameStyle.Render(att.Filename) + "  " + sizeStyle.Render(sizeStr) + "  " + typeStyle.Render(att.MimeType) + "\n")
+	}
+	return b.String()
+}
+
+func formatFileSize(bytes int) string {
+	switch {
+	case bytes >= 1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/(1024*1024))
+	case bytes >= 1024:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
 }
 
 func wordWrap(s string, width int) string {
