@@ -122,11 +122,6 @@ func (d Detail) View() string {
 	b.WriteString(d.renderTabBar())
 	b.WriteString("\n")
 
-	// Separator
-	sepStyle := lipgloss.NewStyle().Foreground(colorBorder)
-	b.WriteString(sepStyle.Render(strings.Repeat("─", d.width)))
-	b.WriteString("\n")
-
 	// Tab content
 	var content string
 	switch d.activeTab {
@@ -152,44 +147,62 @@ func (d Detail) View() string {
 func (d Detail) renderTabBar() string {
 	activeStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	inactiveStyle := lipgloss.NewStyle().Foreground(colorSubtle)
+	dividerStyle := lipgloss.NewStyle().Foreground(colorBorder)
+	activeDiv := lipgloss.NewStyle().Foreground(colorAccent)
 
 	labels := []string{
-		"1:Details",
-		"2:Description",
-		fmt.Sprintf("3:Comments(%d)", len(d.issue.Comments)),
-		fmt.Sprintf("4:Subtasks(%d)", len(d.issue.Subtasks)),
-		fmt.Sprintf("5:Links(%d)", len(d.issue.Links)),
-		fmt.Sprintf("6:Attachments(%d)", len(d.issue.Attachments)),
+		"Details",
+		"Desc",
+		fmt.Sprintf("Comments(%d)", len(d.issue.Comments)),
+		fmt.Sprintf("Subtasks(%d)", len(d.issue.Subtasks)),
+		fmt.Sprintf("Links(%d)", len(d.issue.Links)),
+		fmt.Sprintf("Attach(%d)", len(d.issue.Attachments)),
 	}
 
 	var tabLine strings.Builder
-	var underLine strings.Builder
-	tabLine.WriteString(" ")
-	underLine.WriteString(" ")
+	var divLine strings.Builder
 
-	sep := "  "
+	pad := " "
+	sep := " "
+	tabLine.WriteString(pad)
+	divLine.WriteString(dividerStyle.Render("─"))
+
 	for i, label := range labels {
 		if i > 0 {
 			tabLine.WriteString(sep)
-			underLine.WriteString(sep)
+			divLine.WriteString(dividerStyle.Render("─"))
 		}
-		w := len(label)
+		numLabel := fmt.Sprintf("%d:%s", i+1, label)
+		w := len(numLabel)
 		if detailTab(i) == d.activeTab {
-			tabLine.WriteString(activeStyle.Render(label))
-			underLine.WriteString(lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Repeat("━", w)))
+			tabLine.WriteString(activeStyle.Render(numLabel))
+			divLine.WriteString(activeDiv.Render(strings.Repeat("━", w)))
 		} else {
-			tabLine.WriteString(inactiveStyle.Render(label))
-			underLine.WriteString(strings.Repeat(" ", w))
+			tabLine.WriteString(inactiveStyle.Render(numLabel))
+			divLine.WriteString(dividerStyle.Render(strings.Repeat("─", w)))
 		}
 	}
 
-	return tabLine.String() + "\n" + underLine.String()
+	// Fill remaining width with regular divider
+	tabWidth := 1 // pad
+	for i, label := range labels {
+		if i > 0 {
+			tabWidth++ // sep
+		}
+		tabWidth += len(fmt.Sprintf("%d:%s", i+1, label))
+	}
+	remaining := d.width - tabWidth
+	if remaining > 0 {
+		divLine.WriteString(dividerStyle.Render(strings.Repeat("─", remaining)))
+	}
+
+	return tabLine.String() + "\n" + divLine.String()
 }
 
 func (d Detail) applyScroll(content string) string {
 	lines := strings.Split(content, "\n")
-	// Available height: total height minus tab bar(2), separator(1)
-	viewHeight := d.height - 3
+	// Available height: total height minus tab labels(1) and divider(1)
+	viewHeight := d.height - 2
 	if viewHeight < 1 {
 		viewHeight = 1
 	}

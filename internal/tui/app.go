@@ -18,20 +18,20 @@ const (
 	stateList
 )
 
-// listPaneWidth returns the width of the list pane in split mode (~35% of terminal).
-func (a App) listPaneWidth() int {
-	w := a.width * 35 / 100
-	if w < 40 {
-		w = 40
+// defaultListWidth calculates the default list pane width (~35% of terminal).
+func defaultListWidth(totalWidth int) int {
+	w := totalWidth * 35 / 100
+	if w < 30 {
+		w = 30
 	}
-	if w > 60 {
-		w = 60
+	if w > 80 {
+		w = 80
 	}
 	return w
 }
 
 func (a App) detailPaneWidth() int {
-	return a.width - a.listPaneWidth() - 1
+	return a.width - a.listWidth - 1
 }
 
 // issuesMsg carries fetched issues into the model.
@@ -67,6 +67,8 @@ type App struct {
 	detail        *Detail
 	detailLoading bool
 	detailKey     string // issue key currently shown/loading in detail
+	listWidth     int    // width of the list pane (draggable)
+	dragging      bool   // true while dragging the border
 	spinner       spinner.Model
 	client        *jira.Client
 	profileName   string
@@ -110,6 +112,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
+		// Initialize or clamp list width
+		if a.listWidth == 0 {
+			a.listWidth = defaultListWidth(msg.Width)
+		}
+		if a.listWidth > msg.Width-30 {
+			a.listWidth = msg.Width - 30
+		}
+		if a.listWidth < 20 {
+			a.listWidth = 20
+		}
 		if a.state == stateList {
 			a.list.width = msg.Width
 			a.list.height = msg.Height
@@ -203,7 +215,38 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if a.state == stateList {
 		// Route mouse events by pane in split mode
 		if mouseMsg, ok := msg.(tea.MouseMsg); ok {
-			listW := a.listPaneWidth()
+			listW := a.listWidth
+
+			// Handle border drag
+			if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
+				if mouseMsg.X >= listW-1 && mouseMsg.X <= listW+1 {
+					a.dragging = true
+					return a, nil
+				}
+			}
+			if mouseMsg.Action == tea.MouseActionRelease {
+				a.dragging = false
+				return a, nil
+			}
+			if a.dragging && mouseMsg.Action == tea.MouseActionMotion {
+				newWidth := mouseMsg.X
+				if newWidth < 20 {
+					newWidth = 20
+				}
+				if newWidth > a.width-30 {
+					newWidth = a.width - 30
+				}
+				a.listWidth = newWidth
+				// Update detail dimensions
+				if a.detail != nil {
+					detailWidth := a.detailPaneWidth()
+					d := *a.detail
+					d.width = detailWidth
+					a.detail = &d
+				}
+				return a, nil
+			}
+
 			if mouseMsg.X < listW {
 				adjusted := mouseMsg
 				adjusted.Y = mouseMsg.Y - 1
@@ -255,7 +298,7 @@ func (a App) View() string {
 			b.WriteString(errStyle.Render("Error: " + a.err.Error()))
 		} else {
 			// Always split: list on left, detail on right
-			listW := a.listPaneWidth()
+			listW := a.listWidth
 			detailW := a.detailPaneWidth()
 			contentH := a.height - 2
 
