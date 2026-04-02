@@ -315,7 +315,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the full app.
 func (a App) View() string {
-	contentH := a.height - 2 // status bar + help bar
+	// Guard: don't render until we know terminal dimensions
+	if a.width == 0 || a.height == 0 {
+		return ""
+	}
+
+	contentH := a.height - 1 // just help bar at bottom (no title bar)
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -380,8 +385,7 @@ func (a App) View() string {
 		content = lipgloss.JoinHorizontal(lipgloss.Top, left, border, right)
 	}
 
-	// Build all lines, then hard-cap every line to terminal width
-	// and the total to exactly a.height lines
+	// Build all lines, hard-cap to exact dimensions
 	contentLines := strings.Split(content, "\n")
 	if len(contentLines) > contentH {
 		contentLines = contentLines[:contentH]
@@ -391,7 +395,6 @@ func (a App) View() string {
 	}
 
 	allLines := make([]string, 0, a.height)
-	allLines = append(allLines, a.renderStatusBar())
 	allLines = append(allLines, contentLines...)
 	allLines = append(allLines, a.renderHelpBar())
 
@@ -408,55 +411,29 @@ func (a App) View() string {
 	return strings.Join(allLines, "\n")
 }
 
-func (a App) renderStatusBar() string {
-	titleStyle := lipgloss.NewStyle().
-		Background(colorHeaderBg).
-		Foreground(colorText).
-		Bold(true).
-		PaddingLeft(1).
-		PaddingRight(1)
-
-	profileStyle := lipgloss.NewStyle().
-		Background(colorHeaderBg).
-		Foreground(colorSuccess).
-		PaddingRight(1)
-
-	title := titleStyle.Render("jiratui")
-	profile := profileStyle.Render("● " + a.profileName)
-
-	gap := a.width - lipgloss.Width(title) - lipgloss.Width(profile)
-	if gap < 0 {
-		gap = 0
-	}
-	spacer := lipgloss.NewStyle().
-		Background(colorHeaderBg).
-		Render(strings.Repeat(" ", gap))
-
-	return title + spacer + profile
-}
 
 func (a App) renderHelpBar() string {
-	helpStyle := lipgloss.NewStyle().
-		Background(colorHeaderBg).
-		Foreground(colorSubtle).
-		PaddingLeft(1)
+	bgStyle := lipgloss.NewStyle().Background(colorHeaderBg)
+	helpStyle := bgStyle.Foreground(colorSubtle).PaddingLeft(1)
+	profileStyle := bgStyle.Foreground(colorSuccess).PaddingRight(1)
 
 	var help string
-	switch {
-	case a.state == stateList && a.list.filtering:
-		help = "enter confirm · esc clear filter"
-	default:
-		help = "↑/k up · ↓/j down · 1-5 tabs · / filter · o browser · r refresh · q quit"
+	if a.state == stateList && a.list.filtering {
+		help = "enter confirm · esc clear"
+	} else {
+		help = "/ filter · o browser · r refresh · q quit · ? help"
 	}
 
-	rendered := helpStyle.Render(help)
-	gap := a.width - lipgloss.Width(rendered)
+	left := helpStyle.Render(help)
+	right := profileStyle.Render("● " + a.profileName)
+
+	gap := a.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
 		gap = 0
 	}
-	pad := lipgloss.NewStyle().Background(colorHeaderBg).Render(strings.Repeat(" ", gap))
+	spacer := bgStyle.Render(strings.Repeat(" ", gap))
 
-	return rendered + pad
+	return left + spacer + right
 }
 
 // Run starts the Bubble Tea program.
