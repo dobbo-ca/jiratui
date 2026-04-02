@@ -63,7 +63,6 @@ type DetailKeyMap struct {
 	Tab3   key.Binding
 	Tab4   key.Binding
 	Tab5   key.Binding
-	Tab6   key.Binding
 	Down   key.Binding
 	Up     key.Binding
 }
@@ -82,7 +81,6 @@ var detailKeys = DetailKeyMap{
 	Tab3: key.NewBinding(key.WithKeys("3")),
 	Tab4: key.NewBinding(key.WithKeys("4")),
 	Tab5: key.NewBinding(key.WithKeys("5")),
-	Tab6: key.NewBinding(key.WithKeys("6")),
 	Down: key.NewBinding(
 		key.WithKeys("down", "j"),
 		key.WithHelp("j/↓", "scroll down"),

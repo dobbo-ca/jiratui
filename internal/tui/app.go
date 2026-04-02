@@ -156,7 +156,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Tab switching — forward 1-5 to detail if it exists
 			if a.detail != nil && !a.list.filtering {
-				if msg.String() >= "1" && msg.String() <= "6" {
+				if msg.String() >= "1" && msg.String() <= "5" {
 					d := *a.detail
 					d, _ = d.Update(msg)
 					a.detail = &d
@@ -385,7 +385,7 @@ func (a App) renderHelpBar() string {
 	case a.state == stateList && a.list.filtering:
 		help = "enter confirm · esc clear filter"
 	default:
-		help = "↑/k up · ↓/j down · 1-6 tabs · / filter · o browser · r refresh · q quit"
+		help = "↑/k up · ↓/j down · 1-5 tabs · / filter · o browser · r refresh · q quit"
 	}
 
 	rendered := helpStyle.Render(help)

@@ -16,7 +16,6 @@ type detailTab int
 
 const (
 	tabDetails detailTab = iota
-	tabDescription
 	tabComments
 	tabSubtasks
 	tabLinks
@@ -41,6 +40,17 @@ func NewDetail(issue models.Issue, width, height int) Detail {
 	}
 }
 
+// tabLabels returns the display labels for each tab.
+func (d Detail) tabLabels() []string {
+	return []string{
+		"Details",
+		fmt.Sprintf("Comments(%d)", len(d.issue.Comments)),
+		fmt.Sprintf("Subtasks(%d)", len(d.issue.Subtasks)),
+		fmt.Sprintf("Links(%d)", len(d.issue.Links)),
+		fmt.Sprintf("Attach(%d)", len(d.issue.Attachments)),
+	}
+}
+
 // Update handles messages for the detail view.
 func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -50,18 +60,15 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 			d.activeTab = tabDetails
 			d.scrollY = 0
 		case key.Matches(msg, detailKeys.Tab2):
-			d.activeTab = tabDescription
-			d.scrollY = 0
-		case key.Matches(msg, detailKeys.Tab3):
 			d.activeTab = tabComments
 			d.scrollY = 0
-		case key.Matches(msg, detailKeys.Tab4):
+		case key.Matches(msg, detailKeys.Tab3):
 			d.activeTab = tabSubtasks
 			d.scrollY = 0
-		case key.Matches(msg, detailKeys.Tab5):
+		case key.Matches(msg, detailKeys.Tab4):
 			d.activeTab = tabLinks
 			d.scrollY = 0
-		case key.Matches(msg, detailKeys.Tab6):
+		case key.Matches(msg, detailKeys.Tab5):
 			d.activeTab = tabAttachments
 			d.scrollY = 0
 		case key.Matches(msg, detailKeys.Down):
@@ -78,22 +85,8 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 	case tea.MouseMsg:
 		switch msg.Button {
 		case tea.MouseButtonLeft:
-			// Tab bar click detection — y=0 is the tab bar
 			if msg.Y <= 1 {
-				// Calculate approximate tab positions based on rendered label widths
-				// Labels: " 1:Details " (11), " 2:Description " (16), " 3:Comments(N) " (~16), " 4:Subtasks(N) " (~16), " 5:Links(N) " (~14)
-				tabEnds := []int{11, 27, 43, 59, 73}
-				for i, end := range tabEnds {
-					start := 0
-					if i > 0 {
-						start = tabEnds[i-1]
-					}
-					if msg.X >= start && msg.X < end {
-						d.activeTab = detailTab(i)
-						d.scrollY = 0
-						return d, nil
-					}
-				}
+				d.handleTabClick(msg.X)
 			}
 			return d, nil
 		case tea.MouseButtonWheelDown:
@@ -115,6 +108,25 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 	return d, nil
 }
 
+// handleTabClick switches tab based on X click position.
+func (d *Detail) handleTabClick(x int) {
+	labels := d.tabLabels()
+	pos := 1 // initial padding
+	for i, label := range labels {
+		if i > 0 {
+			pos++ // separator space
+		}
+		numLabel := fmt.Sprintf("%d:%s", i+1, label)
+		w := len(numLabel)
+		if x >= pos && x < pos+w {
+			d.activeTab = detailTab(i)
+			d.scrollY = 0
+			return
+		}
+		pos += w
+	}
+}
+
 // View renders the detail view.
 func (d Detail) View() string {
 	var b strings.Builder
@@ -122,13 +134,10 @@ func (d Detail) View() string {
 	b.WriteString(d.renderTabBar())
 	b.WriteString("\n")
 
-	// Tab content
 	var content string
 	switch d.activeTab {
 	case tabDetails:
 		content = d.renderDetailsTab()
-	case tabDescription:
-		content = d.renderDescriptionTab()
 	case tabComments:
 		content = d.renderCommentsTab()
 	case tabSubtasks:
@@ -150,26 +159,17 @@ func (d Detail) renderTabBar() string {
 	dividerStyle := lipgloss.NewStyle().Foreground(colorBorder)
 	activeDiv := lipgloss.NewStyle().Foreground(colorAccent)
 
-	labels := []string{
-		"Details",
-		"Desc",
-		fmt.Sprintf("Comments(%d)", len(d.issue.Comments)),
-		fmt.Sprintf("Subtasks(%d)", len(d.issue.Subtasks)),
-		fmt.Sprintf("Links(%d)", len(d.issue.Links)),
-		fmt.Sprintf("Attach(%d)", len(d.issue.Attachments)),
-	}
+	labels := d.tabLabels()
 
 	var tabLine strings.Builder
 	var divLine strings.Builder
 
-	pad := " "
-	sep := " "
-	tabLine.WriteString(pad)
+	tabLine.WriteString(" ")
 	divLine.WriteString(dividerStyle.Render("─"))
 
 	for i, label := range labels {
 		if i > 0 {
-			tabLine.WriteString(sep)
+			tabLine.WriteString(" ")
 			divLine.WriteString(dividerStyle.Render("─"))
 		}
 		numLabel := fmt.Sprintf("%d:%s", i+1, label)
@@ -184,10 +184,10 @@ func (d Detail) renderTabBar() string {
 	}
 
 	// Fill remaining width with regular divider
-	tabWidth := 1 // pad
+	tabWidth := 1
 	for i, label := range labels {
 		if i > 0 {
-			tabWidth++ // sep
+			tabWidth++
 		}
 		tabWidth += len(fmt.Sprintf("%d:%s", i+1, label))
 	}
@@ -201,13 +201,11 @@ func (d Detail) renderTabBar() string {
 
 func (d Detail) applyScroll(content string) string {
 	lines := strings.Split(content, "\n")
-	// Available height: total height minus tab labels(1) and divider(1)
-	viewHeight := d.height - 2
+	viewHeight := d.height - 2 // tab labels + divider
 	if viewHeight < 1 {
 		viewHeight = 1
 	}
 
-	// Clamp scrollY (read-only — don't mutate d.scrollY on value receiver)
 	maxScroll := len(lines) - viewHeight
 	if maxScroll < 0 {
 		maxScroll = 0
@@ -226,98 +224,225 @@ func (d Detail) applyScroll(content string) string {
 	return strings.Join(lines[start:end], "\n")
 }
 
+// ── Form field rendering ──────────────────────────────────────
+
+// renderField renders a bordered form field: ╭─ Label ───╮ │ value │ ╰───────────╯
+func renderField(label, value string, width int, valueColor lipgloss.Color) string {
+	if width < 8 {
+		width = 8
+	}
+	bdr := lipgloss.NewStyle().Foreground(colorBorder)
+	lbl := lipgloss.NewStyle().Foreground(colorSubtle)
+
+	innerW := width - 2 // left + right border chars
+	labelText := " " + label + " "
+	dashes := innerW - len(labelText) - 1 // -1 for initial ─
+	if dashes < 0 {
+		dashes = 0
+	}
+	top := bdr.Render("╭─") + lbl.Render(labelText) + bdr.Render(strings.Repeat("─", dashes)+"╮")
+
+	valW := innerW - 2 // padding inside
+	displayVal := truncStr(value, valW)
+	pad := valW - len(displayVal)
+	if pad < 0 {
+		pad = 0
+	}
+	mid := bdr.Render("│") + " " + lipgloss.NewStyle().Foreground(valueColor).Render(displayVal) + strings.Repeat(" ", pad) + " " + bdr.Render("│")
+
+	bot := bdr.Render("╰" + strings.Repeat("─", innerW) + "╯")
+
+	return top + "\n" + mid + "\n" + bot
+}
+
+// renderFieldStyled renders a bordered field with a pre-styled value string.
+func renderFieldStyled(label, styledValue string, width int) string {
+	if width < 8 {
+		width = 8
+	}
+	bdr := lipgloss.NewStyle().Foreground(colorBorder)
+	lbl := lipgloss.NewStyle().Foreground(colorSubtle)
+
+	innerW := width - 2
+	labelText := " " + label + " "
+	dashes := innerW - len(labelText) - 1
+	if dashes < 0 {
+		dashes = 0
+	}
+	top := bdr.Render("╭─") + lbl.Render(labelText) + bdr.Render(strings.Repeat("─", dashes)+"╮")
+
+	valW := innerW - 2
+	visualWidth := lipgloss.Width(styledValue)
+	pad := valW - visualWidth
+	if pad < 0 {
+		pad = 0
+	}
+	mid := bdr.Render("│") + " " + styledValue + strings.Repeat(" ", pad) + " " + bdr.Render("│")
+
+	bot := bdr.Render("╰" + strings.Repeat("─", innerW) + "╯")
+
+	return top + "\n" + mid + "\n" + bot
+}
+
+// renderFieldMultiline renders a bordered field with word-wrapped content.
+func renderFieldMultiline(label, text string, width int, valueColor lipgloss.Color) string {
+	if width < 8 {
+		width = 8
+	}
+	bdr := lipgloss.NewStyle().Foreground(colorBorder)
+	lbl := lipgloss.NewStyle().Foreground(colorSubtle)
+
+	innerW := width - 2
+	labelText := " " + label + " "
+	dashes := innerW - len(labelText) - 1
+	if dashes < 0 {
+		dashes = 0
+	}
+	top := bdr.Render("╭─") + lbl.Render(labelText) + bdr.Render(strings.Repeat("─", dashes)+"╮")
+
+	valW := innerW - 2
+	wrapped := wordWrap(text, valW)
+	var midLines []string
+	for _, line := range strings.Split(wrapped, "\n") {
+		pad := valW - len(line)
+		if pad < 0 {
+			pad = 0
+		}
+		midLines = append(midLines,
+			bdr.Render("│")+" "+lipgloss.NewStyle().Foreground(valueColor).Render(line)+strings.Repeat(" ", pad)+" "+bdr.Render("│"))
+	}
+
+	bot := bdr.Render("╰" + strings.Repeat("─", innerW) + "╯")
+
+	return top + "\n" + strings.Join(midLines, "\n") + "\n" + bot
+}
+
+// joinFieldsHorizontal places rendered fields side by side with a space between.
+func joinFieldsHorizontal(fields ...string) string {
+	return lipgloss.JoinHorizontal(lipgloss.Top, fields...)
+}
+
+// ── Details tab ───────────────────────────────────────────────
+
 func (d Detail) renderDetailsTab() string {
 	var b strings.Builder
-	labelStyle := lipgloss.NewStyle().Foreground(colorSubtle).Width(12)
-	valueStyle := lipgloss.NewStyle().Foreground(colorText)
-	accentStyle := lipgloss.NewStyle().Foreground(colorAccent)
-	boldStyle := lipgloss.NewStyle().Foreground(colorText).Bold(true)
+	w := d.width
+	gap := 1
 
-	// Title
-	b.WriteString("  " + boldStyle.Render(d.issue.Key+" "+d.issue.Summary) + "\n\n")
+	// Row 1: Key + Title
+	keyW := 20
+	titleW := w - keyW - gap
+	if titleW < 20 {
+		titleW = 20
+	}
+	row1 := joinFieldsHorizontal(
+		renderField("Key", d.issue.Key, keyW, colorAccent),
+		renderField("Title", d.issue.Summary, titleW, colorText),
+	)
+	b.WriteString(row1 + "\n")
 
-	// Status
-	b.WriteString("  " + labelStyle.Render("Status") + StyledStatus(d.issue.Status.Name) + "\n")
+	// Row 2: Assignee + Status + Type
+	col3W := (w - 2*gap) / 3
+	col3Rem := w - 3*col3W - 2*gap
 
-	// Priority
-	pColor := priorityColor(d.issue.Priority.Name)
-	pDot := lipgloss.NewStyle().Foreground(pColor).Render("●")
-	b.WriteString("  " + labelStyle.Render("Priority") + pDot + " " + valueStyle.Render(d.issue.Priority.Name) + "\n")
-
-	// Type
-	b.WriteString("  " + labelStyle.Render("Type") + valueStyle.Render(d.issue.Type.Name) + "\n")
-
-	// Assignee
+	assignee := "Unassigned"
+	assigneeColor := colorSubtle
 	if d.issue.Assignee != nil {
-		assigneeStyle := lipgloss.NewStyle().Foreground(colorSuccess)
-		b.WriteString("  " + labelStyle.Render("Assignee") + assigneeStyle.Render(d.issue.Assignee.DisplayName) + "\n")
-	} else {
-		unassigned := lipgloss.NewStyle().Foreground(colorSubtle).Render("Unassigned")
-		b.WriteString("  " + labelStyle.Render("Assignee") + unassigned + "\n")
+		assignee = d.issue.Assignee.DisplayName
+		assigneeColor = colorSuccess
 	}
+	row2 := joinFieldsHorizontal(
+		renderField("Assignee", assignee, col3W, assigneeColor),
+		renderFieldStyled("Status", StyledStatus(d.issue.Status.Name), col3W),
+		renderField("Type", d.issue.Type.Name, col3W+col3Rem, colorText),
+	)
+	b.WriteString(row2 + "\n")
 
-	// Reporter
-	if d.issue.Reporter != nil {
-		b.WriteString("  " + labelStyle.Render("Reporter") + valueStyle.Render(d.issue.Reporter.DisplayName) + "\n")
-	}
+	// Row 3: Priority + Due Date + Reporter
+	pColor := priorityColor(d.issue.Priority.Name)
+	pValue := lipgloss.NewStyle().Foreground(pColor).Render("● " + d.issue.Priority.Name)
 
-	// Sprint
-	if d.issue.Sprint != "" {
-		b.WriteString("  " + labelStyle.Render("Sprint") + valueStyle.Render(d.issue.Sprint) + "\n")
-	}
-
-	// Parent
-	if d.issue.Parent != nil {
-		parentText := accentStyle.Render(d.issue.Parent.Key) + " " + valueStyle.Render(d.issue.Parent.Summary)
-		b.WriteString("  " + labelStyle.Render("Parent") + parentText + "\n")
-	}
-
-	// Labels
-	if len(d.issue.Labels) > 0 {
-		labelTags := make([]string, len(d.issue.Labels))
-		tagStyle := lipgloss.NewStyle().Foreground(colorInfo)
-		for i, l := range d.issue.Labels {
-			labelTags[i] = tagStyle.Render("[" + l + "]")
-		}
-		b.WriteString("  " + labelStyle.Render("Labels") + strings.Join(labelTags, " ") + "\n")
-	}
-
-	// Created
-	b.WriteString("  " + labelStyle.Render("Created") + valueStyle.Render(d.issue.Created.Format("2006-01-02 15:04")) + "\n")
-
-	// Updated
-	updatedText := relativeTime(d.issue.Updated) + " (" + d.issue.Updated.Format("2006-01-02 15:04") + ")"
-	b.WriteString("  " + labelStyle.Render("Updated") + valueStyle.Render(updatedText) + "\n")
-
-	// Due Date
+	dueStr := "—"
+	dueColor := colorSubtle
 	if d.issue.DueDate != nil {
-		dueStr := d.issue.DueDate.Format("2006-01-02")
+		dueStr = d.issue.DueDate.Format("2006-01-02")
 		now := time.Now()
-		var dueStyle lipgloss.Style
 		if d.issue.DueDate.Before(now) {
-			dueStyle = lipgloss.NewStyle().Foreground(colorError)
+			dueColor = colorError
 		} else if d.issue.DueDate.Before(now.Add(7 * 24 * time.Hour)) {
-			dueStyle = lipgloss.NewStyle().Foreground(colorWarning)
+			dueColor = colorWarning
 		} else {
-			dueStyle = lipgloss.NewStyle().Foreground(colorText)
+			dueColor = colorText
 		}
-		b.WriteString("  " + labelStyle.Render("Due Date") + dueStyle.Render(dueStr) + "\n")
 	}
+
+	reporter := "—"
+	if d.issue.Reporter != nil {
+		reporter = d.issue.Reporter.DisplayName
+	}
+
+	row3 := joinFieldsHorizontal(
+		renderFieldStyled("Priority", pValue, col3W),
+		renderField("Due Date", dueStr, col3W, dueColor),
+		renderField("Reporter", reporter, col3W+col3Rem, colorText),
+	)
+	b.WriteString(row3 + "\n")
+
+	// Row 4: Parent + Created + Updated
+	parentStr := "—"
+	parentColor := colorSubtle
+	if d.issue.Parent != nil {
+		parentStr = d.issue.Parent.Key + " " + d.issue.Parent.Summary
+		parentColor = colorAccent
+	}
+
+	updatedStr := relativeTime(d.issue.Updated)
+
+	row4 := joinFieldsHorizontal(
+		renderField("Parent", parentStr, col3W, parentColor),
+		renderField("Created", d.issue.Created.Format("2006-01-02 15:04"), col3W, colorText),
+		renderField("Updated", updatedStr, col3W+col3Rem, colorText),
+	)
+	b.WriteString(row4 + "\n")
+
+	// Row 5: Sprint + Labels
+	if d.issue.Sprint != "" || len(d.issue.Labels) > 0 {
+		sprintW := col3W
+		labelsW := w - sprintW - gap
+
+		sprintVal := "—"
+		if d.issue.Sprint != "" {
+			sprintVal = d.issue.Sprint
+		}
+
+		labelsVal := "—"
+		if len(d.issue.Labels) > 0 {
+			tags := make([]string, len(d.issue.Labels))
+			for i, l := range d.issue.Labels {
+				tags[i] = "[" + l + "]"
+			}
+			labelsVal = strings.Join(tags, " ")
+		}
+
+		row5 := joinFieldsHorizontal(
+			renderField("Sprint", sprintVal, sprintW, colorText),
+			renderField("Labels", labelsVal, labelsW, colorInfo),
+		)
+		b.WriteString(row5 + "\n")
+	}
+
+	// Row 6: Description
+	descText := d.issue.Description
+	if descText == "" {
+		descText = "No description."
+	}
+	b.WriteString(renderFieldMultiline("Description", descText, w, colorText))
+	b.WriteString("\n")
 
 	return b.String()
 }
 
-func (d Detail) renderDescriptionTab() string {
-	if d.issue.Description == "" {
-		subtle := lipgloss.NewStyle().Foreground(colorSubtle)
-		return "  " + subtle.Render("No description.")
-	}
-	contentWidth := d.width - 4
-	if contentWidth < 20 {
-		contentWidth = 20
-	}
-	return "  " + wordWrap(d.issue.Description, contentWidth)
-}
+// ── Other tabs ────────────────────────────────────────────────
 
 func (d Detail) renderCommentsTab() string {
 	if len(d.issue.Comments) == 0 {
