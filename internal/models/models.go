@@ -24,6 +24,18 @@ type IssueType struct {
 	Name string // "Bug", "Task", "Story", "Epic"
 }
 
+type Transition struct {
+	ID   string
+	Name string
+	To   Status
+}
+
+type Project struct {
+	ID   string
+	Key  string
+	Name string
+}
+
 type Comment struct {
 	ID      string
 	Author  User

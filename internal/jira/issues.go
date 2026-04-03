@@ -16,13 +16,18 @@ type SearchResult struct {
 }
 
 // SearchMyIssues fetches issues assigned to the current user.
+// projectKey optionally filters to a specific project (empty = all projects).
 // orderBy is a JQL ORDER BY clause like "key ASC" or "summary DESC".
 // If empty, defaults to "updated DESC".
-func (c *Client) SearchMyIssues(maxResults int, pageToken, orderBy string) (*SearchResult, error) {
+func (c *Client) SearchMyIssues(maxResults int, pageToken, orderBy, projectKey string) (*SearchResult, error) {
 	if orderBy == "" {
 		orderBy = "updated DESC"
 	}
-	jql := "assignee = currentUser() AND statusCategory != Done ORDER BY " + orderBy
+	jql := "assignee = currentUser() AND statusCategory != Done"
+	if projectKey != "" {
+		jql += " AND project = " + projectKey
+	}
+	jql += " ORDER BY " + orderBy
 	return c.searchIssues(jql, maxResults, pageToken)
 }
 

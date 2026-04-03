@@ -47,7 +47,11 @@ var rootCmd = &cobra.Command{
 		}
 
 		client := jira.NewClient(profile.URL, profile.Email, profile.APIToken)
-		return tui.Run(client, cfg.ActiveProfile)
+		var profileNames []string
+		for name := range cfg.Profiles {
+			profileNames = append(profileNames, name)
+		}
+		return tui.Run(client, cfg.ActiveProfile, profile.Project, cfgPath, profileNames)
 	},
 }
 

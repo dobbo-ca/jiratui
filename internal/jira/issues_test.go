@@ -64,7 +64,7 @@ func TestSearchMyIssues(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(server.URL, "user@test.com", "token")
-	result, err := c.SearchMyIssues(50, "", "")
+	result, err := c.SearchMyIssues(50, "", "", "")
 	if err != nil {
 		t.Fatalf("SearchMyIssues failed: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestSearchMyIssuesPagination(t *testing.T) {
 	c := NewClient(server.URL, "user@test.com", "token")
 
 	// Page 1
-	result, err := c.SearchMyIssues(1, "", "")
+	result, err := c.SearchMyIssues(1, "", "", "")
 	if err != nil {
 		t.Fatalf("page 1 failed: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestSearchMyIssuesPagination(t *testing.T) {
 	}
 
 	// Page 2
-	result, err = c.SearchMyIssues(1, result.NextPageToken, "")
+	result, err = c.SearchMyIssues(1, result.NextPageToken, "", "")
 	if err != nil {
 		t.Fatalf("page 2 failed: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestSearchMyIssuesAuthError(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(server.URL, "bad@test.com", "bad-token")
-	_, err := c.SearchMyIssues(50, "", "")
+	_, err := c.SearchMyIssues(50, "", "", "")
 	if err == nil {
 		t.Fatal("expected auth error, got nil")
 	}

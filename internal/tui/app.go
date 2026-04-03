@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/christopherdobbyn/jiratui/internal/config"
 	"github.com/christopherdobbyn/jiratui/internal/jira"
 	"github.com/christopherdobbyn/jiratui/internal/models"
 	"github.com/muesli/ansi"
@@ -96,6 +97,18 @@ type issueDetailMsg struct {
 	forKey string // which issue key this detail is for
 }
 
+// assignableUsersMsg carries fetched assignable users for a project.
+type assignableUsersMsg struct {
+	users      []models.User
+	projectKey string
+}
+
+// transitionsMsg carries fetched transitions for an issue.
+type transitionsMsg struct {
+	transitions []models.Transition
+	forKey      string
+}
+
 func fetchIssueDetail(client *jira.Client, key string) tea.Cmd {
 	return func() tea.Msg {
 		issue, err := client.GetIssue(key)
@@ -103,6 +116,41 @@ func fetchIssueDetail(client *jira.Client, key string) tea.Cmd {
 			return errMsg{err: err}
 		}
 		return issueDetailMsg{issue: *issue, forKey: key}
+	}
+}
+
+func fetchAssignableUsers(client *jira.Client, projectKey string) tea.Cmd {
+	return func() tea.Msg {
+		users, err := client.GetAssignableUsers(projectKey)
+		if err != nil {
+			return nil // silently fail — dropdown just stays empty
+		}
+		return assignableUsersMsg{users: users, projectKey: projectKey}
+	}
+}
+
+func fetchTransitions(client *jira.Client, issueKey string) tea.Cmd {
+	return func() tea.Msg {
+		transitions, err := client.GetTransitions(issueKey)
+		if err != nil {
+			return nil
+		}
+		return transitionsMsg{transitions: transitions, forKey: issueKey}
+	}
+}
+
+// prioritiesMsg carries fetched priorities.
+type prioritiesMsg struct {
+	priorities []models.Priority
+}
+
+func fetchPriorities(client *jira.Client) tea.Cmd {
+	return func() tea.Msg {
+		priorities, err := client.GetPriorities()
+		if err != nil {
+			return nil
+		}
+		return prioritiesMsg{priorities: priorities}
 	}
 }
 
@@ -152,28 +200,118 @@ type App struct {
 	spinner       spinner.Model
 	client        *jira.Client
 	profileName   string
+	configPath    string              // path to config file for saving state
+	projectKey    string              // current project filter (empty = all)
+	projectName   string              // display name of current project
+	projects      []models.Project    // available projects
+	projectDrop   Dropdown            // project selector dropdown
+	profileDrop   Dropdown            // workspace/profile selector dropdown
+	profileNames  []string            // available profile names
 	err           error
 	width         int
 	height        int
 }
 
+// projectsMsg carries fetched projects.
+type projectsMsg struct {
+	projects []models.Project
+}
+
+func fetchProjects(client *jira.Client) tea.Cmd {
+	return func() tea.Msg {
+		projects, err := client.GetProjects()
+		if err != nil {
+			return nil
+		}
+		return projectsMsg{projects: projects}
+	}
+}
+
 // NewApp creates the root TUI model.
-func NewApp(client *jira.Client, profileName string) App {
+func NewApp(client *jira.Client, profileName, initialProject, configPath string, profileNames []string) App {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(colorAccent)
 
+	projectName := "All Projects"
+	if initialProject != "" {
+		projectName = initialProject
+	}
+	projectDrop := NewDropdown("Project", nil, projectName, initialProject, 30)
+	projectDrop.SetPinnedItems([]DropdownItem{{ID: "", Label: "All Projects"}})
+	projectDrop.SetValueColor(colorInfo)
+
+	// Profile/workspace dropdown
+	profileItems := make([]DropdownItem, len(profileNames))
+	for i, name := range profileNames {
+		profileItems[i] = DropdownItem{ID: name, Label: name}
+	}
+	profileDrop := NewSimpleDropdown("Workspace", profileItems, profileName, profileName, 25)
+	profileDrop.SetValueColor(colorSuccess)
+
 	return App{
-		state:       stateLoading,
-		spinner:     s,
-		client:      client,
-		profileName: profileName,
+		state:        stateLoading,
+		spinner:      s,
+		client:       client,
+		profileName:  profileName,
+		configPath:   configPath,
+		projectKey:   initialProject,
+		projectName:  projectName,
+		projectDrop:  projectDrop,
+		profileDrop:  profileDrop,
+		profileNames: profileNames,
 	}
 }
 
-func fetchIssues(client *jira.Client, sort SortState) tea.Cmd {
+// profileSwitchedMsg signals that the active profile was changed and the app should restart.
+type profileSwitchedMsg struct{}
+
+func switchProfile(configPath, newProfile string) tea.Cmd {
 	return func() tea.Msg {
-		result, err := client.SearchMyIssues(50, "", sort.orderByClause())
+		if configPath == "" {
+			return nil
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return nil
+		}
+		cfg.ActiveProfile = newProfile
+		_ = config.Save(cfg, configPath)
+		return profileSwitchedMsg{}
+	}
+}
+
+func saveProjectToConfig(configPath, profileName, projectKey string) tea.Cmd {
+	return func() tea.Msg {
+		if configPath == "" {
+			return nil
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return nil
+		}
+		profile, ok := cfg.Profiles[profileName]
+		if !ok {
+			return nil
+		}
+		profile.Project = projectKey
+		cfg.Profiles[profileName] = profile
+		_ = config.Save(cfg, configPath)
+		return nil
+	}
+}
+
+func sortProjectsByKey(projects []models.Project) {
+	for i := 1; i < len(projects); i++ {
+		for j := i; j > 0 && projects[j].Key < projects[j-1].Key; j-- {
+			projects[j], projects[j-1] = projects[j-1], projects[j]
+		}
+	}
+}
+
+func fetchIssues(client *jira.Client, sort SortState, projectKey string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := client.SearchMyIssues(50, "", sort.orderByClause(), projectKey)
 		if err != nil {
 			return errMsg{err: err}
 		}
@@ -183,7 +321,11 @@ func fetchIssues(client *jira.Client, sort SortState) tea.Cmd {
 
 // Init starts the spinner and fires the initial data fetch.
 func (a App) Init() tea.Cmd {
-	return tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort))
+	return tea.Batch(
+		a.spinner.Tick,
+		fetchIssues(a.client, a.sort, a.projectKey),
+		fetchProjects(a.client),
+	)
 }
 
 // Update handles all messages.
@@ -221,6 +363,58 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
 		}
+
+		// When project dropdown is open, forward keys to it
+		if a.projectDrop.IsOpen() {
+			var cmd tea.Cmd
+			a.projectDrop, cmd = a.projectDrop.Update(msg)
+			if !a.projectDrop.IsOpen() {
+				sel := a.projectDrop.SelectedItem()
+				newKey := ""
+				newName := "All Projects"
+				if sel != nil {
+					newKey = sel.ID
+					newName = sel.Label
+				}
+				if newKey != a.projectKey {
+					a.projectKey = newKey
+					a.projectName = newName
+					a.state = stateLoading
+					a.detail = nil
+					a.detailKey = ""
+					return a, tea.Batch(
+						a.spinner.Tick,
+						fetchIssues(a.client, a.sort, a.projectKey),
+						saveProjectToConfig(a.configPath, a.profileName, a.projectKey),
+					)
+				}
+			}
+			return a, cmd
+		}
+
+		// When profile dropdown is open, forward keys to it
+		if a.profileDrop.IsOpen() {
+			var cmd tea.Cmd
+			a.profileDrop, cmd = a.profileDrop.Update(msg)
+			if !a.profileDrop.IsOpen() {
+				sel := a.profileDrop.SelectedItem()
+				if sel != nil && sel.ID != a.profileName {
+					// Switch active profile and save
+					return a, switchProfile(a.configPath, sel.ID)
+				}
+			}
+			return a, cmd
+		}
+
+		// When detail has a focused input, forward all keys to it
+		if a.detail != nil && a.detail.Editing() {
+			d := *a.detail
+			var cmd tea.Cmd
+			d, cmd = d.Update(msg)
+			a.detail = &d
+			return a, cmd
+		}
+
 		// Help overlay toggle
 		if msg.String() == "?" {
 			if a.showHelp {
@@ -240,13 +434,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "q" && !a.list.filtering {
 				return a, tea.Quit
 			}
+			// Project selector
+			if msg.String() == "p" && !a.list.filtering {
+				return a, a.projectDrop.OpenDropdown()
+			}
 			// Refresh
 			if msg.String() == "r" && !a.list.filtering {
 				a.state = stateLoading
 				a.err = nil
 				a.detail = nil
 				a.detailKey = ""
-				return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort))
+				return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort, a.projectKey))
 			}
 			// Tab switching — forward 1-5 to detail if it exists
 			if a.detail != nil && !a.list.filtering {
@@ -302,7 +500,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.state = stateLoading
 		a.detail = nil
 		a.detailKey = ""
-		return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort))
+		return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort, a.projectKey))
 
 	case cursorChangedMsg:
 		// Only fetch if it's a different issue
@@ -321,8 +519,55 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			d := NewDetail(msg.issue, detailWidth, contentHeight)
 			a.detail = &d
 			a.detailLoading = false
+			// Fetch dropdown data in parallel
+			return a, tea.Batch(
+				fetchAssignableUsers(a.client, msg.issue.ProjectKey),
+				fetchTransitions(a.client, msg.issue.Key),
+				fetchPriorities(a.client),
+			)
 		}
 		return a, nil
+
+	case assignableUsersMsg:
+		if a.detail != nil {
+			d := *a.detail
+			d.SetAssigneeOptions(msg.users)
+			a.detail = &d
+		}
+		return a, nil
+
+	case transitionsMsg:
+		if a.detail != nil && msg.forKey == a.detailKey {
+			d := *a.detail
+			d.SetStatusOptions(msg.transitions)
+			a.detail = &d
+		}
+		return a, nil
+
+	case prioritiesMsg:
+		if a.detail != nil {
+			d := *a.detail
+			d.SetPriorityOptions(msg.priorities)
+			a.detail = &d
+		}
+		return a, nil
+
+	case projectsMsg:
+		a.projects = msg.projects
+		// Projects already sorted by name from API; re-sort by key
+		sorted := make([]models.Project, len(msg.projects))
+		copy(sorted, msg.projects)
+		sortProjectsByKey(sorted)
+		items := make([]DropdownItem, len(sorted))
+		for i, p := range sorted {
+			items[i] = DropdownItem{ID: p.Key, Label: p.Key + " — " + p.Name}
+		}
+		a.projectDrop.SetItems(items)
+		return a, nil
+
+	case profileSwitchedMsg:
+		// Profile was changed — quit so user relaunches with new credentials
+		return a, tea.Quit
 
 	case errMsg:
 		a.err = msg.err
@@ -339,10 +584,154 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// Forward blink messages to project dropdown when open
+	if a.projectDrop.IsOpen() {
+		var cmd tea.Cmd
+		a.projectDrop, cmd = a.projectDrop.Update(msg)
+		if cmd != nil {
+			return a, cmd
+		}
+	}
+
+	// Blur detail editing on any click outside the detail pane
+	if a.state == stateList && a.detail != nil && a.detail.Editing() {
+		if mouseMsg, ok := msg.(tea.MouseMsg); ok {
+			if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
+				listW := a.listWidth
+				inDetailPane := mouseMsg.X > listW
+				helpBarY := a.height - 1
+				onHelpBar := mouseMsg.Y == helpBarY
+				if !inDetailPane || onHelpBar {
+					d := *a.detail
+					d.blurAll()
+					a.detail = &d
+					return a, nil // consume the click — just blur, don't act on it
+				}
+			}
+		}
+	}
+
+	// Forward cursor blink and other messages to detail when editing
+	if a.state == stateList && a.detail != nil && a.detail.Editing() {
+		// For mouse events, don't forward here — they'll be handled
+		// by the regular mouse routing below with proper coordinate adjustment.
+		// Only forward non-mouse messages (blink, etc.)
+		if _, isMouse := msg.(tea.MouseMsg); !isMouse {
+			d := *a.detail
+			var cmd tea.Cmd
+			d, cmd = d.Update(msg)
+			a.detail = &d
+			if cmd != nil {
+				return a, cmd
+			}
+		}
+	}
+
 	// Forward remaining messages to list
 	if a.state == stateList {
 		// Route mouse events by pane in split mode
 		if mouseMsg, ok := msg.(tea.MouseMsg); ok {
+			// Handle clicks on help bar (last line) for project/profile
+			if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
+				helpBarY := a.height - 1
+				if mouseMsg.Y == helpBarY && !a.list.filtering {
+					projectX, profileX := a.helpBarClickZones()
+					if mouseMsg.X >= profileX {
+						return a, a.profileDrop.OpenDropdown()
+					}
+					if mouseMsg.X >= projectX {
+						return a, a.projectDrop.OpenDropdown()
+					}
+				}
+			}
+
+			// When profile dropdown is open, intercept all mouse events
+			if a.profileDrop.IsOpen() {
+				if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
+					overlay := a.profileDrop.RenderStandaloneOverlay()
+					if overlay != nil {
+						overlayH := len(overlay)
+						contentH := a.height - 1
+						startLine := contentH - overlayH
+						if startLine < 0 {
+							startLine = 0
+						}
+						overlayW := lipgloss.Width(overlay[0])
+						xOff := a.usableWidth() - overlayW
+
+						if mouseMsg.Y >= startLine && mouseMsg.Y < startLine+overlayH &&
+							mouseMsg.X >= xOff && mouseMsg.X < xOff+overlayW {
+							overlayLine := mouseMsg.Y - startLine - 3
+							if overlayLine >= 0 && a.profileDrop.HandleClick(overlayLine) {
+								sel := a.profileDrop.SelectedItem()
+								if sel != nil && sel.ID != a.profileName {
+									return a, switchProfile(a.configPath, sel.ID)
+								}
+								return a, nil
+							}
+						} else {
+							a.profileDrop.Close()
+						}
+					} else {
+						a.profileDrop.Close()
+					}
+				}
+				return a, nil
+			}
+
+			// When project dropdown is open, intercept all mouse events
+			if a.projectDrop.IsOpen() {
+				if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
+					// Calculate overlay position to check if click is on an item
+					overlay := a.projectDrop.RenderStandaloneOverlay()
+					if overlay != nil {
+						overlayH := len(overlay)
+						contentH := a.height - 1
+						startLine := contentH - overlayH
+						if startLine < 0 {
+							startLine = 0
+						}
+						overlayW := lipgloss.Width(overlay[0])
+						xOff := a.usableWidth() - overlayW
+
+						// Check if click is within the overlay bounds
+						if mouseMsg.Y >= startLine && mouseMsg.Y < startLine+overlayH &&
+							mouseMsg.X >= xOff && mouseMsg.X < xOff+overlayW {
+							overlayLine := mouseMsg.Y - startLine - 3 // subtract field header (top/mid/connector)
+							if overlayLine >= 0 && a.projectDrop.HandleClick(overlayLine) {
+								// Selection made — check if project changed
+								sel := a.projectDrop.SelectedItem()
+								newKey := ""
+								newName := "All Projects"
+								if sel != nil {
+									newKey = sel.ID
+									newName = sel.Label
+								}
+								if newKey != a.projectKey {
+									a.projectKey = newKey
+									a.projectName = newName
+									a.state = stateLoading
+									a.detail = nil
+									a.detailKey = ""
+									return a, tea.Batch(
+										a.spinner.Tick,
+										fetchIssues(a.client, a.sort, a.projectKey),
+										saveProjectToConfig(a.configPath, a.profileName, a.projectKey),
+									)
+								}
+								return a, nil
+							}
+						} else {
+							// Click outside overlay — close it
+							a.projectDrop.Close()
+						}
+					} else {
+						a.projectDrop.Close()
+					}
+				}
+				return a, nil
+			}
+
 			listW := a.listWidth
 
 			// Handle border drag
@@ -485,6 +874,38 @@ func (a App) View() string {
 		// Full-screen help view
 		allLines = strings.Split(a.renderHelpScreen(), "\n")
 	} else {
+		// Composite any bottom-right overlay (project or profile dropdown)
+		var bottomOverlay []string
+		if ov := a.projectDrop.RenderStandaloneOverlay(); ov != nil {
+			bottomOverlay = ov
+		} else if ov := a.profileDrop.RenderStandaloneOverlay(); ov != nil {
+			bottomOverlay = ov
+		}
+		if bottomOverlay != nil {
+			overlayH := len(bottomOverlay)
+			startLine := len(contentLines) - overlayH
+			if startLine < 0 {
+				startLine = 0
+			}
+			overlayW := lipgloss.Width(bottomOverlay[0])
+			xOff := a.usableWidth() - overlayW
+			if xOff < 0 {
+				xOff = 0
+			}
+			for i, oLine := range bottomOverlay {
+				idx := startLine + i
+				if idx < len(contentLines) {
+					existing := contentLines[idx]
+					existVis := lipgloss.Width(existing)
+					if existVis > xOff {
+						existing = truncateAnsi(existing, xOff)
+					} else {
+						existing += strings.Repeat(" ", xOff-existVis)
+					}
+					contentLines[idx] = existing + oLine
+				}
+			}
+		}
 		allLines = append(allLines, contentLines...)
 		allLines = append(allLines, a.renderHelpBar())
 	}
@@ -583,14 +1004,24 @@ func (a App) renderHelpBar() string {
 	profileStyle := bgStyle.Foreground(colorSuccess).PaddingRight(1)
 
 	var help string
-	if a.state == stateList && a.list.filtering {
+	if a.projectDrop.IsOpen() || a.profileDrop.IsOpen() {
+		help = "↑↓ navigate · enter select · esc close"
+	} else if a.detail != nil && a.detail.Editing() {
+		help = "esc close · enter confirm"
+	} else if a.state == stateList && a.list.filtering {
 		help = "enter confirm · esc clear"
 	} else {
-		help = "/ filter · o browser · r refresh · q quit · ? help"
+		help = "/ filter · p project · o browser · r refresh · q quit · ? help"
 	}
 
 	left := helpStyle.Render(help)
-	right := profileStyle.Render("● " + a.profileName)
+
+	projectLabel := a.projectName
+	if a.projectKey != "" {
+		projectLabel = a.projectKey
+	}
+	projectStyle := bgStyle.Foreground(colorInfo)
+	right := projectStyle.Render(projectLabel+" ") + profileStyle.Render("● "+a.profileName)
 
 	gap := a.usableWidth() - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
@@ -601,9 +1032,26 @@ func (a App) renderHelpBar() string {
 	return left + spacer + right
 }
 
+// helpBarClickZones returns the X positions where the project label and profile label start.
+func (a App) helpBarClickZones() (projectX, profileX int) {
+	projectLabel := a.projectName
+	if a.projectKey != "" {
+		projectLabel = a.projectKey
+	}
+	profileLabel := "● " + a.profileName
+
+	projectW := lipgloss.Width(projectLabel + " ")
+	profileW := lipgloss.Width(profileLabel)
+
+	rightW := projectW + profileW
+	projectX = a.usableWidth() - rightW
+	profileX = a.usableWidth() - profileW
+	return
+}
+
 // Run starts the Bubble Tea program.
-func Run(client *jira.Client, profileName string) error {
-	app := NewApp(client, profileName)
+func Run(client *jira.Client, profileName, initialProject, configPath string, profileNames []string) error {
+	app := NewApp(client, profileName, initialProject, configPath, profileNames)
 	p := tea.NewProgram(app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

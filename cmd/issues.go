@@ -36,7 +36,7 @@ func runIssues(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Fetching issues from %s...\n\n", profile.URL)
 
-	result, err := client.SearchMyIssues(50, "", "")
+	result, err := client.SearchMyIssues(50, "", "", "")
 	if err != nil {
 		return err
 	}

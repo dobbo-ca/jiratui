@@ -15,23 +15,69 @@ var (
 	colorInfo       = lipgloss.Color("#7dcfff") // cyan
 	colorSubtle     = lipgloss.Color("#565f89") // gray
 	colorPurple     = lipgloss.Color("#bb9af7")
+	colorOrange     = lipgloss.Color("#ff9e64")
 	colorSelection  = lipgloss.Color("#292e42")
 )
 
+// statusColor returns the color for a Jira status name.
+func statusColor(status string) lipgloss.Color {
+	switch status {
+	// Done category
+	case "Done", "Closed", "Resolved", "Released", "Completed":
+		return colorSuccess
+	// In Progress category
+	case "In Progress", "In Development", "Building", "Implementing":
+		return colorWarning
+	// Review / waiting category
+	case "In Review", "In QA", "Code Review", "Awaiting Review", "Review",
+		"QA", "Testing", "Validation", "Ready for Review":
+		return colorPurple
+	// Blocked / on hold
+	case "Blocked", "On Hold", "Impediment", "Waiting", "Pending",
+		"Awaiting Approval", "Waiting for Support", "Waiting for Customer":
+		return colorError
+	// To Do / backlog
+	case "To Do", "Open", "New", "Backlog", "Selected for Development",
+		"Ready", "Ready for Development", "Reopened":
+		return colorSubtle
+	// Deployed / shipped
+	case "Deployed", "Shipped", "Live", "In Production":
+		return colorInfo
+	default:
+		return colorText
+	}
+}
+
 // StyledStatus returns a color-coded status string.
 func StyledStatus(status string) string {
-	var color lipgloss.Color
-	switch status {
-	case "Done":
-		color = colorSuccess
-	case "In Progress":
-		color = colorWarning
-	case "In Review":
-		color = colorPurple
-	case "To Do":
-		color = colorSubtle
+	return lipgloss.NewStyle().Foreground(statusColor(status)).Render(status)
+}
+
+// priorityColor returns the color for a Jira priority name.
+func priorityColor(priority string) lipgloss.Color {
+	switch priority {
+	// Critical / Blocker
+	case "Highest", "Blocker", "Critical", "P0", "Urgent":
+		return colorError
+	// High
+	case "High", "Major", "P1":
+		return colorOrange
+	// Medium
+	case "Medium", "Normal", "P2", "Default":
+		return colorWarning
+	// Low
+	case "Low", "Minor", "P3":
+		return colorSuccess
+	// Lowest / Trivial
+	case "Lowest", "Trivial", "P4", "P5":
+		return colorAccent
 	default:
-		color = colorText
+		return colorSubtle
 	}
-	return lipgloss.NewStyle().Foreground(color).Render(status)
+}
+
+// StyledPriority returns a color-coded priority string with a bullet indicator.
+func StyledPriority(priority string) string {
+	color := priorityColor(priority)
+	return lipgloss.NewStyle().Foreground(color).Render("● " + priority)
 }

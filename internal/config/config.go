@@ -12,6 +12,7 @@ type Profile struct {
 	URL      string `yaml:"url"`
 	Email    string `yaml:"email"`
 	APIToken string `yaml:"api_token"`
+	Project  string `yaml:"project,omitempty"` // last-used project key
 }
 
 type Config struct {

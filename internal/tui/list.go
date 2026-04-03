@@ -132,23 +132,6 @@ func (l *List) clampCursor() {
 }
 
 // priorityColor returns the color for a priority level.
-func priorityColor(priority string) lipgloss.Color {
-	switch priority {
-	case "Highest":
-		return colorError
-	case "High":
-		return lipgloss.Color("#ff9e64")
-	case "Medium":
-		return colorWarning
-	case "Low":
-		return colorSuccess
-	case "Lowest":
-		return colorAccent
-	default:
-		return colorSubtle
-	}
-}
-
 func rowColor(issue models.Issue) lipgloss.Color {
 	if issue.DueDate == nil {
 		return colorText
