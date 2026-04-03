@@ -3,11 +3,18 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// dropdownSearchTick carries the sequence number at the time the tick was scheduled.
+type dropdownSearchTick struct {
+	seq   int
+	label string // identifies which dropdown this tick belongs to
+}
 
 // DropdownItem represents a selectable option in the dropdown.
 type DropdownItem struct {
@@ -32,8 +39,11 @@ type Dropdown struct {
 	width       int
 	maxVisible  int
 	scrollOff   int // scroll offset for long lists
-	styledValue string
-	StyleFunc   func(value string) string // dynamically style the displayed value
+	styledValue  string
+	StyleFunc    func(value string) string   // dynamically style the displayed value
+	minSearchLen int                          // minimum chars before search triggers (0 = filter immediately)
+	searchSeq    int                          // debounce counter
+	OnSearch     func(query string) tea.Cmd   // async search callback; replaces local filtering when set
 }
 
 // NewDropdown creates a new dropdown with the given label and items.
@@ -213,6 +223,23 @@ func (d Dropdown) Update(msg tea.Msg) (Dropdown, tea.Cmd) {
 			// Forward to search input
 			var cmd tea.Cmd
 			d.search, cmd = d.search.Update(msg)
+			if d.OnSearch != nil {
+				query := d.search.Value()
+				if len(query) < d.minSearchLen {
+					d.filtered = nil
+					d.rebuildAllDisplay()
+					d.cursor = 0
+					d.scrollOff = 0
+					return d, cmd
+				}
+				d.searchSeq++
+				seq := d.searchSeq
+				label := d.label
+				tickCmd := tea.Tick(300*time.Millisecond, func(t time.Time) tea.Msg {
+					return dropdownSearchTick{seq: seq, label: label}
+				})
+				return d, tea.Batch(cmd, tickCmd)
+			}
 			d.applyFilter()
 			return d, cmd
 		}
@@ -226,6 +253,17 @@ func (d Dropdown) Update(msg tea.Msg) (Dropdown, tea.Cmd) {
 		return d, cmd
 	}
 	return d, nil
+}
+
+// HandleSearchTick processes a debounce tick. Returns a search command if the tick is still current.
+func (d *Dropdown) HandleSearchTick(tick dropdownSearchTick) tea.Cmd {
+	if tick.seq != d.searchSeq || !d.open {
+		return nil
+	}
+	if d.OnSearch != nil {
+		return d.OnSearch(d.search.Value())
+	}
+	return nil
 }
 
 func (d *Dropdown) applyFilter() {
@@ -445,7 +483,11 @@ func (d Dropdown) RenderOverlay() []string {
 
 	// Filtered items
 	if len(d.filtered) == 0 {
-		noMatch := lipgloss.NewStyle().Foreground(colorSubtle).Render("No matches")
+		msg := "No matches"
+		if d.OnSearch != nil && len(d.search.Value()) < d.minSearchLen {
+			msg = fmt.Sprintf("Type %d+ chars to search...", d.minSearchLen)
+		}
+		noMatch := lipgloss.NewStyle().Foreground(colorSubtle).Render(msg)
 		pad := valW - lipgloss.Width(noMatch)
 		if pad < 0 {
 			pad = 0

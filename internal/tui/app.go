@@ -154,6 +154,31 @@ func fetchPriorities(client *jira.Client) tea.Cmd {
 	}
 }
 
+// parentSearchResultsMsg carries search results for the parent dropdown.
+type parentSearchResultsMsg struct {
+	items  []DropdownItem
+	forKey string
+}
+
+func searchParentIssues(client *jira.Client, query, forKey string) tea.Cmd {
+	return func() tea.Msg {
+		escaped := strings.ReplaceAll(query, `"`, `\"`)
+		jql := fmt.Sprintf(`summary ~ "%s" ORDER BY updated DESC`, escaped)
+		result, err := client.SearchIssues(jql, 10, "")
+		if err != nil {
+			return nil
+		}
+		items := make([]DropdownItem, len(result.Issues))
+		for i, issue := range result.Issues {
+			items[i] = DropdownItem{
+				ID:    issue.Key,
+				Label: issue.Key + " - " + issue.Summary,
+			}
+		}
+		return parentSearchResultsMsg{items: items, forKey: forKey}
+	}
+}
+
 // SortField represents a sortable column.
 type SortField int
 
@@ -517,6 +542,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			contentHeight := a.height - 2
 			detailWidth := a.detailPaneWidth()
 			d := NewDetail(msg.issue, detailWidth, contentHeight)
+			issueKey := msg.issue.Key
+			client := a.client
+			d.SetParentSearchFunc(func(query string) tea.Cmd {
+				return searchParentIssues(client, query, issueKey)
+			})
 			a.detail = &d
 			a.detailLoading = false
 			// Fetch dropdown data in parallel
@@ -549,6 +579,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			d := *a.detail
 			d.SetPriorityOptions(msg.priorities)
 			a.detail = &d
+		}
+		return a, nil
+
+	case parentSearchResultsMsg:
+		if a.detail != nil && msg.forKey == a.detailKey {
+			d := *a.detail
+			d.parentDrop.SetItems(msg.items)
+			a.detail = &d
+		}
+		return a, nil
+
+	case dropdownSearchTick:
+		if a.detail != nil {
+			d := *a.detail
+			cmd := d.parentDrop.HandleSearchTick(msg)
+			a.detail = &d
+			return a, cmd
 		}
 		return a, nil
 

@@ -43,6 +43,8 @@ type Detail struct {
 	statusDrop   Dropdown
 	priorityDrop Dropdown
 	dueDatePick  DatePicker
+	parentDrop   Dropdown
+	parentHover  bool // true when mouse is hovering over parent field
 }
 
 // NewDetail creates a new detail model for the given issue.
@@ -92,6 +94,16 @@ func NewDetail(issue models.Issue, width, height int) Detail {
 	dueDatePick := NewDatePicker("Due Date", issue.DueDate, 0)
 	dueDatePick.SetValueColor(dueDateColor(issue.DueDate))
 
+	// Parent dropdown — searchable with min 3 chars
+	parentVal := "—"
+	parentID := ""
+	if issue.Parent != nil {
+		parentVal = issue.Parent.Key
+		parentID = issue.Parent.Key
+	}
+	parentDrop := NewDropdown("Parent", nil, parentVal, parentID, 0)
+	parentDrop.minSearchLen = 3
+
 	return Detail{
 		issue:        issue,
 		width:        width,
@@ -102,7 +114,13 @@ func NewDetail(issue models.Issue, width, height int) Detail {
 		statusDrop:   statusDrop,
 		priorityDrop: priorityDrop,
 		dueDatePick:  dueDatePick,
+		parentDrop:   parentDrop,
 	}
+}
+
+// SetParentSearchFunc sets the async search callback for the parent dropdown.
+func (d *Detail) SetParentSearchFunc(fn func(query string) tea.Cmd) {
+	d.parentDrop.OnSearch = fn
 }
 
 // SetAssigneeOptions populates the assignee dropdown with users.
@@ -140,7 +158,8 @@ func (d *Detail) SetPriorityOptions(priorities []models.Priority) {
 func (d Detail) Editing() bool {
 	return d.titleInput.Focused() || d.descFocused ||
 		d.assigneeDrop.IsOpen() || d.statusDrop.IsOpen() ||
-		d.priorityDrop.IsOpen() || d.dueDatePick.IsOpen()
+		d.priorityDrop.IsOpen() || d.dueDatePick.IsOpen() ||
+		d.parentDrop.IsOpen()
 }
 
 // tabLabels returns the display labels for each tab.
@@ -159,6 +178,11 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// When a dropdown is open, forward keys to it
+		if d.parentDrop.IsOpen() {
+			var cmd tea.Cmd
+			d.parentDrop, cmd = d.parentDrop.Update(msg)
+			return d, cmd
+		}
 		if d.assigneeDrop.IsOpen() {
 			var cmd tea.Cmd
 			d.assigneeDrop, cmd = d.assigneeDrop.Update(msg)
@@ -241,6 +265,13 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 		return d, nil
 
 	case tea.MouseMsg:
+		// Track hover for parent tooltip
+		if msg.Action == tea.MouseActionMotion && d.activeTab == tabDetails {
+			col4W := (d.width - 1) / 4
+			d.parentHover = msg.Y >= 5 && msg.Y <= 7 && msg.X < col4W && d.issue.Parent != nil
+			return d, nil
+		}
+
 		// Only handle press events, not release
 		if msg.Action != tea.MouseActionPress {
 			// Still forward non-press to open components for blink etc.
@@ -343,52 +374,38 @@ func (d *Detail) blurAll() {
 	d.statusDrop.Close()
 	d.priorityDrop.Close()
 	d.dueDatePick.Close()
+	d.parentDrop.Close()
 }
 
 // anyOverlayOpen returns true if any dropdown/picker overlay is showing.
 func (d Detail) anyOverlayOpen() bool {
 	return d.assigneeDrop.IsOpen() || d.statusDrop.IsOpen() ||
-		d.priorityDrop.IsOpen() || d.dueDatePick.IsOpen()
+		d.priorityDrop.IsOpen() || d.dueDatePick.IsOpen() ||
+		d.parentDrop.IsOpen()
 }
 
 // handleDetailClick handles mouse clicks on detail fields.
 func (d *Detail) handleDetailClick(x, y int) tea.Cmd {
 	w := d.width - 1
+	col4W := w / 4
 	col3W := w / 3
 
-	// If anything is being edited, the first click just closes/blurs it.
-	// Overlay clicks on the open overlay's items are the exception.
+	// Row positions (each row = 3 lines, tab bar = 2 lines)
+	row1Y := 2        // Title
+	row2Y := row1Y + 3 // Parent, Key, Type, Due Date
+	row3Y := row2Y + 3 // Assignee, Reporter, Status
+	row4Y := row3Y + 3 // Updated, Created, Priority
+	row5Y := row4Y + 3 // Labels
+	row6Y := row5Y + 3 // Description
+
+	// If anything is being edited, handle overlay clicks or close.
 	if d.Editing() {
 		if d.anyOverlayOpen() {
-			// Standalone overlays start at the field's row position
-			// Row 2 fields start at y = 2 (tab bar) + 3 (row1) = 5
-			// Row 3 fields start at y = 5 + 3 = 8
-			row2FieldY := 2 + 3
-			row3FieldY := row2FieldY + 3
-
-			if d.assigneeDrop.IsOpen() {
-				overlay := d.assigneeDrop.RenderStandaloneOverlay()
-				if overlay != nil && y >= row2FieldY && y < row2FieldY+len(overlay) && x < col3W {
-					clickLine := y - row2FieldY - 3 // subtract field header
-					if clickLine >= 0 && d.assigneeDrop.HandleClick(clickLine) {
-						return nil
-					}
-				}
-			}
-			if d.statusDrop.IsOpen() {
-				overlay := d.statusDrop.RenderStandaloneOverlay()
-				if overlay != nil && y >= row2FieldY && y < row2FieldY+len(overlay) && x >= col3W && x < 2*col3W {
-					clickLine := y - row2FieldY - 3
-					if clickLine >= 0 && d.statusDrop.HandleClick(clickLine) {
-						return nil
-					}
-				}
-			}
-			if d.priorityDrop.IsOpen() {
-				overlay := d.priorityDrop.RenderStandaloneOverlay()
-				if overlay != nil && y >= row3FieldY && y < row3FieldY+len(overlay) && x < col3W {
-					clickLine := y - row3FieldY - 3
-					if clickLine >= 0 && d.priorityDrop.HandleClick(clickLine) {
+			if d.parentDrop.IsOpen() {
+				overlay := d.parentDrop.RenderStandaloneOverlay()
+				if overlay != nil && y >= row2Y && y < row2Y+len(overlay) && x < col4W {
+					clickLine := y - row2Y - 3
+					if clickLine >= 0 && d.parentDrop.HandleClick(clickLine) {
 						return nil
 					}
 				}
@@ -396,56 +413,62 @@ func (d *Detail) handleDetailClick(x, y int) tea.Cmd {
 			if d.dueDatePick.IsOpen() {
 				overlay := d.dueDatePick.RenderOverlay()
 				if overlay != nil {
-					// Date picker overlay starts after the field (3 lines for field header)
-					overlayStartY := row3FieldY + 3
-					if y >= overlayStartY && y < overlayStartY+len(overlay) &&
-						x >= col3W && x < 2*col3W {
+					overlayStartY := row2Y + 3
+					if y >= overlayStartY && y < overlayStartY+len(overlay) && x >= 3*col4W {
 						overlayLine := y - overlayStartY
-						localX := x - col3W
-						if d.dueDatePick.HandleClick(overlayLine, localX, col3W) {
+						localX := x - 3*col4W
+						if d.dueDatePick.HandleClick(overlayLine, localX, col4W) {
 							return nil
 						}
 					}
 				}
 			}
+			if d.assigneeDrop.IsOpen() {
+				overlay := d.assigneeDrop.RenderStandaloneOverlay()
+				if overlay != nil && y >= row3Y && y < row3Y+len(overlay) && x < col3W {
+					clickLine := y - row3Y - 3
+					if clickLine >= 0 && d.assigneeDrop.HandleClick(clickLine) {
+						return nil
+					}
+				}
+			}
+			if d.statusDrop.IsOpen() {
+				overlay := d.statusDrop.RenderStandaloneOverlay()
+				if overlay != nil && y >= row3Y && y < row3Y+len(overlay) && x >= 2*col3W {
+					clickLine := y - row3Y - 3
+					if clickLine >= 0 && d.statusDrop.HandleClick(clickLine) {
+						return nil
+					}
+				}
+			}
+			if d.priorityDrop.IsOpen() {
+				overlay := d.priorityDrop.RenderStandaloneOverlay()
+				if overlay != nil && y >= row4Y && y < row4Y+len(overlay) && x >= 2*col3W {
+					clickLine := y - row4Y - 3
+					if clickLine >= 0 && d.priorityDrop.HandleClick(clickLine) {
+						return nil
+					}
+				}
+			}
 		}
 
-		// Click wasn't on an overlay item — just close/blur everything
 		d.blurAll()
 		return nil
 	}
 
-	// Row 1: y=2..4 — Key + Title
-	if y >= 2 && y <= 4 {
-		keyW := d.keyFieldWidth()
-		if x >= keyW {
-			d.blurAll()
-			d.titleInput.Focus()
-			return d.titleInput.Cursor.BlinkCmd()
-		}
+	// Row 1: Title (full width)
+	if y >= row1Y && y < row2Y {
 		d.blurAll()
-		return nil
+		d.titleInput.Focus()
+		return d.titleInput.Cursor.BlinkCmd()
 	}
 
-	// Row 2: y=5..7 — Assignee + Status + Type
-	if y >= 5 && y <= 7 {
-		if x < col3W {
+	// Row 2: Parent + Key + Type + Due Date (4 columns)
+	if y >= row2Y && y < row3Y {
+		if x < col4W {
 			d.blurAll()
-			return d.assigneeDrop.OpenDropdown()
-		} else if x < 2*col3W {
-			d.blurAll()
-			return d.statusDrop.OpenDropdown()
-		}
-		d.blurAll()
-		return nil
-	}
-
-	// Row 3: y=8..10 — Priority + Due Date + Reporter
-	if y >= 8 && y <= 10 {
-		if x < col3W {
-			d.blurAll()
-			return d.priorityDrop.OpenDropdown()
-		} else if x < 2*col3W {
+			return d.parentDrop.OpenDropdown()
+		} else if x >= 3*col4W {
 			d.blurAll()
 			d.dueDatePick.OpenPicker()
 			return nil
@@ -454,14 +477,37 @@ func (d *Detail) handleDetailClick(x, y int) tea.Cmd {
 		return nil
 	}
 
-	// Calculate description row start
-	descRowStart := 4*3 + 2 // 4 rows * 3 lines + tab bar (2 lines)
-	hasSprint := d.issue.Sprint != "" || len(d.issue.Labels) > 0
-	if hasSprint {
-		descRowStart += 3
+	// Row 3: Assignee + Reporter + Status (3 columns)
+	if y >= row3Y && y < row4Y {
+		if x < col3W {
+			d.blurAll()
+			return d.assigneeDrop.OpenDropdown()
+		} else if x >= 2*col3W {
+			d.blurAll()
+			return d.statusDrop.OpenDropdown()
+		}
+		d.blurAll()
+		return nil
 	}
 
-	if y >= descRowStart {
+	// Row 4: Updated + Created + Priority (3 columns)
+	if y >= row4Y && y < row5Y {
+		if x >= 2*col3W {
+			d.blurAll()
+			return d.priorityDrop.OpenDropdown()
+		}
+		d.blurAll()
+		return nil
+	}
+
+	// Row 5: Labels (read-only)
+	if y >= row5Y && y < row6Y {
+		d.blurAll()
+		return nil
+	}
+
+	// Row 6+: Description
+	if y >= row6Y {
 		d.blurAll()
 		d.descFocused = true
 		d.descInput.Focus()
@@ -470,17 +516,6 @@ func (d *Detail) handleDetailClick(x, y int) tea.Cmd {
 
 	d.blurAll()
 	return nil
-}
-
-// keyFieldWidth returns the width for the Key field, sized to fit the key value.
-func (d Detail) keyFieldWidth() int {
-	valueW := len(d.issue.Key) + 4
-	labelW := 9
-	w := valueW
-	if w < labelW {
-		w = labelW
-	}
-	return w
 }
 
 // descMaxScroll returns the maximum scroll offset for the description field.
@@ -502,10 +537,7 @@ func (d Detail) descMaxScroll() int {
 	wrapped := wordWrap(descText, valW)
 	totalLines := len(strings.Split(wrapped, "\n"))
 
-	usedLines := 4 * 3
-	if d.issue.Sprint != "" || len(d.issue.Labels) > 0 {
-		usedLines += 3
-	}
+	usedLines := 5 * 3 // 5 rows × 3 lines (labels always shown)
 	availH := d.height - 2 - usedLines - 2
 	if availH < 3 {
 		availH = 3
@@ -1002,50 +1034,53 @@ func (d Detail) renderDetailsTabWithOverlays() (string, []overlayInfo) {
 	var b strings.Builder
 	var overlays []overlayInfo
 	w := d.width - 1
-	gap := 0
-	lineY := 0 // track current line position
+	lineY := 0
 
-	// Row 1: Key + Title (3 lines)
-	keyW := d.keyFieldWidth()
-	titleW := w - keyW - gap
-	if titleW < 20 {
-		titleW = 20
-	}
-	d.titleInput.Width = titleW - 6
-	row1 := joinFieldsHorizontal(
-		renderField("Key", d.issue.Key, keyW, colorAccent),
-		d.renderInputField("Title", &d.titleInput, titleW),
-	)
+	// Row 1: Title (full width, 3 lines)
+	d.titleInput.Width = w - 6
+	row1 := d.renderInputField("Title", &d.titleInput, w)
 	b.WriteString(row1 + "\n")
 	lineY += 3
 
-	// Row 2: Assignee + Status + Type (3 lines)
-	col3W := (w - 2*gap) / 3
-	col3Rem := w - 3*col3W - 2*gap
+	// Row 2: Parent + Key + Type + Due Date (4 columns, 3 lines)
+	col4W := w / 4
+	col4Rem := w - 4*col4W
 
-	d.assigneeDrop.width = col3W
-	d.statusDrop.width = col3W
+	d.parentDrop.width = col4W
+	d.dueDatePick.width = col4W
 
 	row2 := joinFieldsHorizontal(
-		d.assigneeDrop.View(),
-		d.statusDrop.View(),
-		renderField("Type", d.issue.Type.Name, col3W+col3Rem, colorText),
+		d.parentDrop.View(),
+		renderField("Key", d.issue.Key, col4W, colorAccent),
+		renderField("Type", d.issue.Type.Name, col4W, colorText),
+		d.dueDatePick.View(),
 	)
+	// Absorb remainder into last field by padding if needed
+	_ = col4Rem
 	b.WriteString(row2 + "\n")
 	lineY += 3
 
-	// Collect row2 overlays — use standalone (includes field header) for full overlay
-	if overlay := d.assigneeDrop.RenderStandaloneOverlay(); overlay != nil {
-		// Position so the field header aligns with row2's field position
+	// Collect row2 overlays
+	if overlay := d.parentDrop.RenderStandaloneOverlay(); overlay != nil {
 		overlays = append(overlays, overlayInfo{lines: overlay, y: lineY - 3, x: 0})
 	}
-	if overlay := d.statusDrop.RenderStandaloneOverlay(); overlay != nil {
-		overlays = append(overlays, overlayInfo{lines: overlay, y: lineY - 3, x: col3W})
+	if overlay := d.dueDatePick.RenderOverlay(); overlay != nil {
+		overlays = append(overlays, overlayInfo{lines: overlay, y: lineY, x: 3 * col4W})
+	}
+	// Parent hover tooltip
+	if d.parentHover && d.issue.Parent != nil && !d.parentDrop.IsOpen() {
+		tooltip := d.issue.Parent.Key + ": " + d.issue.Parent.Summary
+		tooltipStyle := lipgloss.NewStyle().Foreground(colorText).Background(colorSelection)
+		tooltipLine := tooltipStyle.Render(truncStr(tooltip, w-2))
+		overlays = append(overlays, overlayInfo{lines: []string{tooltipLine}, y: lineY, x: 0})
 	}
 
-	// Row 3: Priority + Due Date + Reporter (3 lines)
-	d.priorityDrop.width = col3W
-	d.dueDatePick.width = col3W
+	// Row 3: Assignee + Reporter + Status (3 columns, 3 lines)
+	col3W := w / 3
+	col3Rem := w - 3*col3W
+
+	d.assigneeDrop.width = col3W
+	d.statusDrop.width = col3W
 
 	reporter := "—"
 	if d.issue.Reporter != nil {
@@ -1053,72 +1088,54 @@ func (d Detail) renderDetailsTabWithOverlays() (string, []overlayInfo) {
 	}
 
 	row3 := joinFieldsHorizontal(
-		d.priorityDrop.View(),
-		d.dueDatePick.View(),
-		renderField("Reporter", reporter, col3W+col3Rem, colorText),
+		d.assigneeDrop.View(),
+		renderField("Reporter", reporter, col3W, colorText),
+		d.statusDrop.View(),
 	)
+	_ = col3Rem
 	b.WriteString(row3 + "\n")
 	lineY += 3
 
-	// Collect row3 overlays — use standalone for priority, regular for datepicker
-	if overlay := d.priorityDrop.RenderStandaloneOverlay(); overlay != nil {
+	// Collect row3 overlays
+	if overlay := d.assigneeDrop.RenderStandaloneOverlay(); overlay != nil {
 		overlays = append(overlays, overlayInfo{lines: overlay, y: lineY - 3, x: 0})
 	}
-	if overlay := d.dueDatePick.RenderOverlay(); overlay != nil {
-		// Date picker doesn't have RenderStandaloneOverlay — field already renders with ├──┤
-		overlays = append(overlays, overlayInfo{lines: overlay, y: lineY, x: col3W})
+	if overlay := d.statusDrop.RenderStandaloneOverlay(); overlay != nil {
+		overlays = append(overlays, overlayInfo{lines: overlay, y: lineY - 3, x: 2 * col3W})
 	}
 
-	// Row 4: Parent + Created + Updated (3 lines)
-	parentStr := "—"
-	parentColor := colorSubtle
-	if d.issue.Parent != nil {
-		parentStr = d.issue.Parent.Key + " " + d.issue.Parent.Summary
-		parentColor = colorAccent
-	}
-
-	updatedStr := d.issue.Updated.Format("2006-01-02 15:04")
+	// Row 4: Updated + Created + Priority (3 columns, 3 lines)
+	d.priorityDrop.width = col3W
 
 	row4 := joinFieldsHorizontal(
-		renderField("Parent", parentStr, col3W, parentColor),
+		renderField("Updated", d.issue.Updated.Format("2006-01-02 15:04"), col3W, colorText),
 		renderField("Created", d.issue.Created.Format("2006-01-02 15:04"), col3W, colorText),
-		renderField("Updated", updatedStr, col3W+col3Rem, colorText),
+		d.priorityDrop.View(),
 	)
 	b.WriteString(row4 + "\n")
 	lineY += 3
 
-	// Row 5: Sprint + Labels (optional, 3 lines)
-	if d.issue.Sprint != "" || len(d.issue.Labels) > 0 {
-		sprintW := col3W
-		labelsW := w - sprintW - gap
-
-		sprintVal := "—"
-		if d.issue.Sprint != "" {
-			sprintVal = d.issue.Sprint
-		}
-
-		labelsVal := "—"
-		if len(d.issue.Labels) > 0 {
-			tags := make([]string, len(d.issue.Labels))
-			for i, l := range d.issue.Labels {
-				tags[i] = "[" + l + "]"
-			}
-			labelsVal = strings.Join(tags, " ")
-		}
-
-		row5 := joinFieldsHorizontal(
-			renderField("Sprint", sprintVal, sprintW, colorText),
-			renderField("Labels", labelsVal, labelsW, colorInfo),
-		)
-		b.WriteString(row5 + "\n")
-		lineY += 3
+	// Collect row4 overlays
+	if overlay := d.priorityDrop.RenderStandaloneOverlay(); overlay != nil {
+		overlays = append(overlays, overlayInfo{lines: overlay, y: lineY - 3, x: 2 * col3W})
 	}
+
+	// Row 5: Labels (full width, always shown, 3 lines)
+	labelsVal := "—"
+	labelsColor := colorSubtle
+	if len(d.issue.Labels) > 0 {
+		tags := make([]string, len(d.issue.Labels))
+		for i, l := range d.issue.Labels {
+			tags[i] = "[" + l + "]"
+		}
+		labelsVal = strings.Join(tags, " ")
+		labelsColor = colorInfo
+	}
+	b.WriteString(renderField("Labels", labelsVal, w, labelsColor) + "\n")
+	lineY += 3
 
 	// Row 6: Description
-	usedLines := 4 * 3
-	if d.issue.Sprint != "" || len(d.issue.Labels) > 0 {
-		usedLines += 3
-	}
+	usedLines := 5 * 3 // 5 rows × 3 lines each
 	availH := d.height - 2 - usedLines - 2
 	if availH < 3 {
 		availH = 3
