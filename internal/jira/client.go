@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -69,40 +70,581 @@ func (c *Client) get(path string) ([]byte, error) {
 	return body, nil
 }
 
+func (c *Client) put(path string, jsonBody []byte) error {
+	url := c.baseURL + path
+
+	req, err := http.NewRequest("PUT", url, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	auth := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.apiToken))
+	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("executing request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Jira API error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func (c *Client) post(path string, jsonBody []byte) error {
+	url := c.baseURL + path
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	auth := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.apiToken))
+	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("executing request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Jira API error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func (c *Client) deleteReq(path string) error {
+	url := c.baseURL + path
+
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	auth := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.apiToken))
+	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("executing request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Jira API error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
 func decodeJSON[T any](data []byte) (T, error) {
 	var result T
 	err := json.Unmarshal(data, &result)
 	return result, err
 }
 
-// extractTextFromADF converts Atlassian Document Format to plain text.
-func extractTextFromADF(adf *jiraADF) string {
+// adfToMarkdown converts Atlassian Document Format to markdown.
+func adfToMarkdown(adf *jiraADF) string {
 	if adf == nil {
 		return ""
 	}
 
-	var paragraphs []string
+	var blocks []string
 	for _, node := range adf.Content {
-		text := extractNodeText(node)
-		if text != "" {
-			paragraphs = append(paragraphs, text)
+		block := renderBlock(node, "")
+		if block != "" {
+			blocks = append(blocks, block)
 		}
 	}
-	return strings.Join(paragraphs, "\n\n")
+	return strings.Join(blocks, "\n\n")
 }
 
-func extractNodeText(node jiraNode) string {
-	if node.Text != "" {
-		return node.Text
+// renderBlock converts a top-level ADF block node to markdown.
+func renderBlock(node jiraNode, prefix string) string {
+	switch node.Type {
+	case "paragraph":
+		return prefix + renderInline(node.Content)
+
+	case "heading":
+		level := 1
+		if l, ok := node.Attrs["level"]; ok {
+			if lf, ok := l.(float64); ok {
+				level = int(lf)
+			}
+		}
+		hashes := strings.Repeat("#", level)
+		return hashes + " " + renderInline(node.Content)
+
+	case "bulletList":
+		return renderList(node.Content, "- ", prefix)
+
+	case "orderedList":
+		return renderList(node.Content, "1. ", prefix)
+
+	case "listItem":
+		// listItem children are block nodes (paragraphs, nested lists)
+		var parts []string
+		for i, child := range node.Content {
+			if i == 0 {
+				parts = append(parts, renderBlock(child, prefix))
+			} else {
+				// Subsequent blocks in a list item get indented continuation
+				parts = append(parts, renderBlock(child, prefix+"  "))
+			}
+		}
+		return strings.Join(parts, "\n")
+
+	case "codeBlock":
+		lang := ""
+		if l, ok := node.Attrs["language"]; ok {
+			if ls, ok := l.(string); ok {
+				lang = ls
+			}
+		}
+		return "```" + lang + "\n" + renderInline(node.Content) + "\n```"
+
+	case "blockquote":
+		var lines []string
+		for _, child := range node.Content {
+			lines = append(lines, "> "+renderBlock(child, ""))
+		}
+		return strings.Join(lines, "\n")
+
+	case "rule":
+		return "---"
+
+	case "hardBreak":
+		return "\n"
+
+	case "table":
+		return renderTable(node)
+
+	default:
+		// Fallback: extract inline text
+		return prefix + renderInline(node.Content)
 	}
-	var parts []string
-	for _, child := range node.Content {
-		text := extractNodeText(child)
-		if text != "" {
-			parts = append(parts, text)
+}
+
+// renderList converts list items with the given bullet prefix.
+func renderList(items []jiraNode, bullet, outerPrefix string) string {
+	var lines []string
+	for _, item := range items {
+		if item.Type != "listItem" {
+			continue
+		}
+		// Render the first paragraph inline with the bullet
+		var parts []string
+		for i, child := range item.Content {
+			if i == 0 {
+				if child.Type == "paragraph" {
+					parts = append(parts, outerPrefix+bullet+renderInline(child.Content))
+				} else {
+					// Nested list as first child
+					parts = append(parts, renderBlock(child, outerPrefix+"  "))
+				}
+			} else {
+				// Subsequent blocks: nested lists or continuation paragraphs
+				indent := outerPrefix + strings.Repeat(" ", len(bullet))
+				parts = append(parts, renderBlock(child, indent))
+			}
+		}
+		lines = append(lines, strings.Join(parts, "\n"))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderInline converts a slice of inline ADF nodes to markdown text.
+func renderInline(nodes []jiraNode) string {
+	var sb strings.Builder
+	for _, node := range nodes {
+		switch node.Type {
+		case "text":
+			text := node.Text
+			for _, mark := range node.Marks {
+				switch mark.Type {
+				case "strong":
+					text = "**" + text + "**"
+				case "em":
+					text = "*" + text + "*"
+				case "code":
+					text = "`" + text + "`"
+				case "strike":
+					text = "~~" + text + "~~"
+				case "link":
+					if href, ok := mark.Attrs["href"]; ok {
+						text = "[" + text + "](" + fmt.Sprint(href) + ")"
+					}
+				}
+			}
+			sb.WriteString(text)
+		case "hardBreak":
+			sb.WriteString("\n")
+		case "mention":
+			if name, ok := node.Attrs["text"]; ok {
+				sb.WriteString(fmt.Sprint(name))
+			}
+		case "emoji":
+			if shortName, ok := node.Attrs["shortName"]; ok {
+				sb.WriteString(fmt.Sprint(shortName))
+			}
+		case "inlineCard":
+			if url, ok := node.Attrs["url"]; ok {
+				sb.WriteString(fmt.Sprint(url))
+			}
+		default:
+			// Recurse for unknown inline nodes
+			sb.WriteString(renderInline(node.Content))
 		}
 	}
-	return strings.Join(parts, "")
+	return sb.String()
+}
+
+// renderTable converts a table ADF node to markdown.
+func renderTable(node jiraNode) string {
+	var rows [][]string
+	for _, row := range node.Content {
+		if row.Type != "tableRow" {
+			continue
+		}
+		var cells []string
+		for _, cell := range row.Content {
+			var parts []string
+			for _, child := range cell.Content {
+				parts = append(parts, renderBlock(child, ""))
+			}
+			cells = append(cells, strings.Join(parts, " "))
+		}
+		rows = append(rows, cells)
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	// Header row
+	sb.WriteString("| " + strings.Join(rows[0], " | ") + " |")
+	// Separator
+	sep := make([]string, len(rows[0]))
+	for i := range sep {
+		sep[i] = "---"
+	}
+	sb.WriteString("\n| " + strings.Join(sep, " | ") + " |")
+	// Data rows
+	for _, row := range rows[1:] {
+		sb.WriteString("\n| " + strings.Join(row, " | ") + " |")
+	}
+	return sb.String()
+}
+
+// markdownToADF converts markdown text to Atlassian Document Format.
+func markdownToADF(md string) *jiraADF {
+	doc := &jiraADF{
+		Type:    "doc",
+		Version: 1,
+		Content: []jiraNode{},
+	}
+
+	if md == "" {
+		return doc
+	}
+
+	lines := strings.Split(md, "\n")
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+
+		// Horizontal rule
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+			doc.Content = append(doc.Content, jiraNode{Type: "rule"})
+			i++
+			continue
+		}
+
+		// Empty line — skip
+		if trimmed == "" {
+			i++
+			continue
+		}
+
+		// Heading
+		if strings.HasPrefix(line, "#") {
+			level := 0
+			for level < len(line) && line[level] == '#' {
+				level++
+			}
+			if level > 0 && level < len(line) && line[level] == ' ' {
+				text := strings.TrimSpace(line[level+1:])
+				doc.Content = append(doc.Content, jiraNode{
+					Type:    "heading",
+					Attrs:   map[string]any{"level": float64(level)},
+					Content: parseInlineMarkdown(text),
+				})
+				i++
+				continue
+			}
+		}
+
+		// Blockquote: collect consecutive > lines
+		if strings.HasPrefix(line, "> ") || line == ">" {
+			var bqLines []string
+			for i < len(lines) && (strings.HasPrefix(lines[i], "> ") || lines[i] == ">") {
+				stripped := strings.TrimPrefix(lines[i], "> ")
+				stripped = strings.TrimPrefix(stripped, ">")
+				bqLines = append(bqLines, stripped)
+				i++
+			}
+			inner := markdownToADF(strings.Join(bqLines, "\n"))
+			doc.Content = append(doc.Content, jiraNode{
+				Type:    "blockquote",
+				Content: inner.Content,
+			})
+			continue
+		}
+
+		// Bullet list: lines starting with - , * , or +
+		if (strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") || strings.HasPrefix(line, "+ ")) {
+			var items []jiraNode
+			for i < len(lines) && (strings.HasPrefix(lines[i], "- ") || strings.HasPrefix(lines[i], "* ") || strings.HasPrefix(lines[i], "+ ")) {
+				text := lines[i][2:]
+				items = append(items, jiraNode{
+					Type: "listItem",
+					Content: []jiraNode{
+						{
+							Type:    "paragraph",
+							Content: parseInlineMarkdown(text),
+						},
+					},
+				})
+				i++
+			}
+			doc.Content = append(doc.Content, jiraNode{
+				Type:    "bulletList",
+				Content: items,
+			})
+			continue
+		}
+
+		// Ordered list: lines starting with N.
+		if isOrderedListLine(line) {
+			var items []jiraNode
+			for i < len(lines) && isOrderedListLine(lines[i]) {
+				text := stripOrderedPrefix(lines[i])
+				items = append(items, jiraNode{
+					Type: "listItem",
+					Content: []jiraNode{
+						{
+							Type:    "paragraph",
+							Content: parseInlineMarkdown(text),
+						},
+					},
+				})
+				i++
+			}
+			doc.Content = append(doc.Content, jiraNode{
+				Type:    "orderedList",
+				Content: items,
+			})
+			continue
+		}
+
+		// Default: paragraph
+		doc.Content = append(doc.Content, jiraNode{
+			Type:    "paragraph",
+			Content: parseInlineMarkdown(line),
+		})
+		i++
+	}
+
+	return doc
+}
+
+// isOrderedListLine checks if a line starts with a digit followed by a dot within the first 3 chars.
+func isOrderedListLine(line string) bool {
+	if len(line) < 3 {
+		return false
+	}
+	dotIdx := strings.Index(line, ".")
+	if dotIdx < 1 || dotIdx > 2 {
+		return false
+	}
+	for j := 0; j < dotIdx; j++ {
+		if line[j] < '0' || line[j] > '9' {
+			return false
+		}
+	}
+	if dotIdx+1 < len(line) && line[dotIdx+1] == ' ' {
+		return true
+	}
+	return false
+}
+
+// stripOrderedPrefix removes "N. " from the start of an ordered list line.
+func stripOrderedPrefix(line string) string {
+	dotIdx := strings.Index(line, ".")
+	if dotIdx >= 0 && dotIdx+2 <= len(line) {
+		return line[dotIdx+2:]
+	}
+	return line
+}
+
+// parseInlineMarkdown parses inline markdown formatting into ADF text nodes.
+func parseInlineMarkdown(text string) []jiraNode {
+	if text == "" {
+		return []jiraNode{{Type: "text", Text: ""}}
+	}
+
+	var nodes []jiraNode
+	var current strings.Builder
+	runes := []rune(text)
+	i := 0
+
+	flushCurrent := func() {
+		if current.Len() > 0 {
+			nodes = append(nodes, jiraNode{Type: "text", Text: current.String()})
+			current.Reset()
+		}
+	}
+
+	for i < len(runes) {
+		// Bold: **text**
+		if i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*' {
+			end := findClosing(runes, i+2, "**")
+			if end >= 0 {
+				flushCurrent()
+				inner := string(runes[i+2 : end])
+				nodes = append(nodes, jiraNode{
+					Type:  "text",
+					Text:  inner,
+					Marks: []jiraMark{{Type: "strong"}},
+				})
+				i = end + 2
+				continue
+			}
+		}
+
+		// Strikethrough: ~~text~~
+		if i+1 < len(runes) && runes[i] == '~' && runes[i+1] == '~' {
+			end := findClosing(runes, i+2, "~~")
+			if end >= 0 {
+				flushCurrent()
+				inner := string(runes[i+2 : end])
+				nodes = append(nodes, jiraNode{
+					Type:  "text",
+					Text:  inner,
+					Marks: []jiraMark{{Type: "strike"}},
+				})
+				i = end + 2
+				continue
+			}
+		}
+
+		// Italic: *text*
+		if runes[i] == '*' {
+			end := findClosingRune(runes, i+1, '*')
+			if end >= 0 {
+				flushCurrent()
+				inner := string(runes[i+1 : end])
+				nodes = append(nodes, jiraNode{
+					Type:  "text",
+					Text:  inner,
+					Marks: []jiraMark{{Type: "em"}},
+				})
+				i = end + 1
+				continue
+			}
+		}
+
+		// Inline code: `text`
+		if runes[i] == '`' {
+			end := findClosingRune(runes, i+1, '`')
+			if end >= 0 {
+				flushCurrent()
+				inner := string(runes[i+1 : end])
+				nodes = append(nodes, jiraNode{
+					Type:  "text",
+					Text:  inner,
+					Marks: []jiraMark{{Type: "code"}},
+				})
+				i = end + 1
+				continue
+			}
+		}
+
+		// Link: [text](url)
+		if runes[i] == '[' {
+			closeBracket := findClosingRune(runes, i+1, ']')
+			if closeBracket >= 0 && closeBracket+1 < len(runes) && runes[closeBracket+1] == '(' {
+				closeParen := findClosingRune(runes, closeBracket+2, ')')
+				if closeParen >= 0 {
+					flushCurrent()
+					linkText := string(runes[i+1 : closeBracket])
+					linkURL := string(runes[closeBracket+2 : closeParen])
+					nodes = append(nodes, jiraNode{
+						Type: "text",
+						Text: linkText,
+						Marks: []jiraMark{{
+							Type:  "link",
+							Attrs: map[string]any{"href": linkURL},
+						}},
+					})
+					i = closeParen + 1
+					continue
+				}
+			}
+		}
+
+		current.WriteRune(runes[i])
+		i++
+	}
+
+	flushCurrent()
+
+	if len(nodes) == 0 {
+		return []jiraNode{{Type: "text", Text: ""}}
+	}
+	return nodes
+}
+
+// findClosing finds the position of a multi-char closing delimiter in runes starting from pos.
+func findClosing(runes []rune, start int, delim string) int {
+	dr := []rune(delim)
+	for i := start; i <= len(runes)-len(dr); i++ {
+		match := true
+		for j := 0; j < len(dr); j++ {
+			if runes[i+j] != dr[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
+// findClosingRune finds the position of a single-char closing delimiter.
+func findClosingRune(runes []rune, start int, ch rune) int {
+	for i := start; i < len(runes); i++ {
+		if runes[i] == ch {
+			return i
+		}
+	}
+	return -1
 }
 
 func mapUser(u *jiraUser) *models.User {
@@ -174,4 +716,42 @@ func (c *Client) VerifyCredentials() (string, error) {
 	}
 
 	return resp.DisplayName, nil
+}
+
+// GetMyself returns the current user's account ID and display name.
+func (c *Client) GetMyself() (accountID, displayName string, err error) {
+	data, err := c.get("/rest/api/3/myself")
+	if err != nil {
+		return "", "", err
+	}
+	resp, err := decodeJSON[jiraMyselfResponse](data)
+	if err != nil {
+		return "", "", err
+	}
+	return resp.AccountID, resp.DisplayName, nil
+}
+
+// AddComment adds a new comment to an issue.
+func (c *Client) AddComment(issueKey, markdownBody string) error {
+	adf := markdownToADF(markdownBody)
+	payload, err := json.Marshal(map[string]any{"body": adf})
+	if err != nil {
+		return fmt.Errorf("marshaling comment: %w", err)
+	}
+	return c.post("/rest/api/3/issue/"+issueKey+"/comment", payload)
+}
+
+// UpdateComment updates an existing comment on an issue.
+func (c *Client) UpdateComment(issueKey, commentID, markdownBody string) error {
+	adf := markdownToADF(markdownBody)
+	payload, err := json.Marshal(map[string]any{"body": adf})
+	if err != nil {
+		return fmt.Errorf("marshaling comment: %w", err)
+	}
+	return c.put("/rest/api/3/issue/"+issueKey+"/comment/"+commentID, payload)
+}
+
+// DeleteComment deletes a comment from an issue.
+func (c *Client) DeleteComment(issueKey, commentID string) error {
+	return c.deleteReq("/rest/api/3/issue/" + issueKey + "/comment/" + commentID)
 }
