@@ -380,6 +380,44 @@ func refreshLinks(client *jira.Client, issueKey string) tea.Cmd {
 	}
 }
 
+// statusesAndTypesMsg carries fetched statuses and issue types for a project.
+type statusesAndTypesMsg struct {
+	statuses   []models.Status
+	issueTypes []models.IssueType
+}
+
+func fetchStatusesAndTypes(client *jira.Client, projectKey string) tea.Cmd {
+	return func() tea.Msg {
+		if projectKey == "" {
+			return nil
+		}
+		statuses, issueTypes, err := client.GetProjectStatusesAndTypes(projectKey)
+		if err != nil {
+			logDebug("GetProjectStatusesAndTypes(%s) error: %v", projectKey, err)
+			return nil
+		}
+		return statusesAndTypesMsg{statuses: statuses, issueTypes: issueTypes}
+	}
+}
+
+func fetchIssuesWithJQL(client *jira.Client, jql string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := client.SearchIssues(jql, 50, "")
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return issuesMsg{issues: result.Issues}
+	}
+}
+
+func isFilterBarKey(key string) bool {
+	switch key {
+	case "t", "s", "a", "l", "d", "D", "x":
+		return true
+	}
+	return false
+}
+
 type attachmentOpenedMsg struct{}
 
 func openAttachment(client *jira.Client, att models.Attachment) tea.Cmd {
@@ -554,6 +592,7 @@ type App struct {
 	projectDrop   Dropdown            // project selector dropdown
 	profileDrop   Dropdown            // workspace/profile selector dropdown
 	profileNames  []string            // available profile names
+	filterBar     FilterBar
 	myAccountID   string              // current user's Jira account ID
 	err           error
 	width         int
@@ -600,6 +639,11 @@ func NewApp(client *jira.Client, profileName, initialProject, configPath string,
 	// Fetch current user's account ID (best effort)
 	myAccountID, _, _ := client.GetMyself()
 
+	filterBar := NewFilterBar(0) // width set on first WindowSizeMsg
+	if myAccountID != "" {
+		filterBar.SetDefaultAssignee(myAccountID, "")
+	}
+
 	return App{
 		state:        stateLoading,
 		spinner:      s,
@@ -611,6 +655,7 @@ func NewApp(client *jira.Client, profileName, initialProject, configPath string,
 		projectDrop:  projectDrop,
 		profileDrop:  profileDrop,
 		profileNames: profileNames,
+		filterBar:    filterBar,
 		myAccountID:  myAccountID,
 	}
 }
@@ -677,6 +722,7 @@ func (a App) Init() tea.Cmd {
 		a.spinner.Tick,
 		fetchIssues(a.client, a.sort, a.projectKey),
 		fetchProjects(a.client),
+		fetchStatusesAndTypes(a.client, a.projectKey),
 	)
 }
 
@@ -696,6 +742,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.listWidth < 20 {
 			a.listWidth = 20
 		}
+		a.filterBar.SetWidth(a.listWidth)
 		if a.state == stateList {
 			a.list.width = msg.Width
 			a.list.height = msg.Height
@@ -734,10 +781,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.state = stateLoading
 					a.detail = nil
 					a.detailKey = ""
+					a.filterBar.ClearAll()
 					return a, tea.Batch(
 						a.spinner.Tick,
 						fetchIssues(a.client, a.sort, a.projectKey),
 						saveProjectToConfig(a.configPath, a.profileName, a.projectKey),
+						fetchStatusesAndTypes(a.client, a.projectKey),
 					)
 				}
 			}
@@ -767,6 +816,29 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 
+		// Filter bar: toggle with f, forward / to expand+search
+		if a.state == stateList {
+			if msg.String() == "f" && !a.filterBar.ActiveDropdown() {
+				a.filterBar.Toggle()
+				return a, nil
+			}
+			if msg.String() == "/" {
+				if !a.filterBar.IsExpanded() {
+					a.filterBar.Expand()
+				}
+				var cmd tea.Cmd
+				a.filterBar, cmd = a.filterBar.Update(msg)
+				return a, cmd
+			}
+		}
+
+		// When filter bar has an active dropdown/picker/search, forward keys to it
+		if a.filterBar.IsExpanded() && (a.filterBar.ActiveDropdown() || isFilterBarKey(msg.String())) {
+			var cmd tea.Cmd
+			a.filterBar, cmd = a.filterBar.Update(msg)
+			return a, cmd
+		}
+
 		// Help overlay toggle
 		if msg.String() == "?" {
 			if a.showHelp {
@@ -782,24 +854,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		if a.state == stateList {
-			// Quit only when not filtering
-			if msg.String() == "q" {
+			if msg.String() == "q" && !a.filterBar.ActiveDropdown() {
 				return a, tea.Quit
 			}
-			// Project selector
-			if msg.String() == "p" {
+			if msg.String() == "p" && !a.filterBar.ActiveDropdown() {
 				return a, a.projectDrop.OpenDropdown()
 			}
-			// Refresh
-			if msg.String() == "r" {
+			if msg.String() == "r" && !a.filterBar.ActiveDropdown() {
 				a.state = stateLoading
 				a.err = nil
 				a.detail = nil
 				a.detailKey = ""
-				return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort, a.projectKey))
+				jql := a.filterBar.BuildJQL(a.projectKey, a.sort.orderByClause())
+				return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
 			}
-			// Tab switching — forward 1-5 to detail if it exists
-			if a.detail != nil {
+			if a.detail != nil && !a.filterBar.ActiveDropdown() {
 				if msg.String() >= "1" && msg.String() <= "4" {
 					d := *a.detail
 					d, _ = d.Update(msg)
@@ -808,6 +877,32 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+
+	case filterChangedMsg:
+		jql := a.filterBar.BuildJQL(a.projectKey, a.sort.orderByClause())
+		a.state = stateLoading
+		a.detail = nil
+		a.detailKey = ""
+		return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
+
+	case filterSearchTick:
+		var cmd tea.Cmd
+		a.filterBar, cmd = a.filterBar.Update(msg)
+		return a, cmd
+
+	case statusesAndTypesMsg:
+		statusItems := make([]DropdownItem, len(msg.statuses))
+		for i, s := range msg.statuses {
+			statusItems[i] = DropdownItem{ID: s.ID, Label: s.Name}
+		}
+		a.filterBar.SetStatusItems(statusItems)
+
+		typeItems := make([]DropdownItem, len(msg.issueTypes))
+		for i, it := range msg.issueTypes {
+			typeItems[i] = DropdownItem{ID: it.ID, Label: it.Name}
+		}
+		a.filterBar.SetTypeItems(typeItems)
+		return a, nil
 
 	case issuesMsg:
 		a.list = NewList(msg.issues, a.width, a.height)
@@ -820,6 +915,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.list.sortAsc = a.sort.Asc
 		a.state = stateList
+		// Extract unique labels for filter bar
+		labelSet := make(map[string]bool)
+		for _, issue := range msg.issues {
+			for _, l := range issue.Labels {
+				labelSet[l] = true
+			}
+		}
+		if len(labelSet) > 0 {
+			labelItems := make([]DropdownItem, 0, len(labelSet))
+			for l := range labelSet {
+				labelItems = append(labelItems, DropdownItem{ID: l, Label: l})
+			}
+			a.filterBar.SetLabelItems(labelItems)
+		}
 		// Auto-fetch first issue detail
 		if len(msg.issues) > 0 {
 			a.detailLoading = true
@@ -852,7 +961,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.state = stateLoading
 		a.detail = nil
 		a.detailKey = ""
-		return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort, a.projectKey))
+		jql := a.filterBar.BuildJQL(a.projectKey, a.sort.orderByClause())
+		return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
 
 	case cursorChangedMsg:
 		// Only fetch if it's a different issue
@@ -950,6 +1060,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			d.SetBoardAssignees(msg.users, a.myAccountID)
 			a.detail = &d
 		}
+		// Populate filter bar assignees
+		assigneeItems := make([]DropdownItem, len(msg.users))
+		for i, u := range msg.users {
+			label := u.DisplayName
+			if u.AccountID == a.myAccountID {
+				label += " (me)"
+			}
+			assigneeItems[i] = DropdownItem{ID: u.AccountID, Label: label}
+		}
+		a.filterBar.SetAssigneeItems(assigneeItems)
 		return a, nil
 
 	case assignableUsersMsg:
@@ -1279,10 +1399,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									a.state = stateLoading
 									a.detail = nil
 									a.detailKey = ""
+									a.filterBar.ClearAll()
 									return a, tea.Batch(
 										a.spinner.Tick,
 										fetchIssues(a.client, a.sort, a.projectKey),
 										saveProjectToConfig(a.configPath, a.profileName, a.projectKey),
+										fetchStatusesAndTypes(a.client, a.projectKey),
 									)
 								}
 								return a, nil
@@ -1396,7 +1518,14 @@ func (a App) View() string {
 				Align(lipgloss.Center, lipgloss.Center)
 			left = loadStyle.Render(a.spinner.View() + " Loading...")
 		} else {
-			left = a.list.ViewWithWidth(listW, contentH)
+			filterView := a.filterBar.View()
+			filterH := a.filterBar.Height()
+			listH := contentH - filterH
+			if listH < 3 {
+				listH = 3
+			}
+			listView := a.list.ViewWithWidth(listW, listH)
+			left = filterView + "\n" + listView
 		}
 
 		// Border
@@ -1441,6 +1570,26 @@ func (a App) View() string {
 	}
 	for len(contentLines) < contentH {
 		contentLines = append(contentLines, "")
+	}
+
+	// Composite filter bar dropdown overlays
+	if a.filterBar.IsExpanded() {
+		overlayLines, startLine, startCol := a.filterBar.OverlayLines()
+		if overlayLines != nil {
+			for i, oLine := range overlayLines {
+				idx := startLine + i
+				if idx >= 0 && idx < len(contentLines) {
+					existing := contentLines[idx]
+					existVis := lipgloss.Width(existing)
+					if existVis > startCol {
+						existing = truncateAnsi(existing, startCol)
+					} else {
+						existing += strings.Repeat(" ", startCol-existVis)
+					}
+					contentLines[idx] = existing + oLine
+				}
+			}
+		}
 	}
 
 	allLines := make([]string, 0, a.height)
@@ -1529,8 +1678,14 @@ func (a App) renderHelpScreen() string {
 	section("Detail Tabs")
 	entry("1-5", "Switch tab")
 
+	section("Filters")
+	entry("f", "Toggle filter bar")
+	entry("t / s / a / l", "Type / Status / Assignee / Labels")
+	entry("d / D", "Created from / until")
+	entry("/", "Search")
+	entry("x", "Clear all filters")
+
 	section("Actions")
-	entry("/", "Filter issues")
 	entry("o", "Open in browser")
 	entry("r", "Refresh issues")
 	entry("q", "Quit")
@@ -1579,12 +1734,16 @@ func (a App) renderHelpBar() string {
 	profileStyle := bgStyle.Foreground(colorSuccess).PaddingRight(1)
 
 	var help string
-	if a.projectDrop.IsOpen() || a.profileDrop.IsOpen() {
+	if a.filterBar.IsExpanded() && a.filterBar.ActiveDropdown() {
+		help = "↑↓ navigate · enter/space toggle · esc close"
+	} else if a.filterBar.IsExpanded() {
+		help = "t type · s status · a assignee · l labels · d dates · / search · x clear · esc close"
+	} else if a.projectDrop.IsOpen() || a.profileDrop.IsOpen() {
 		help = "↑↓ navigate · enter select · esc close"
 	} else if a.detail != nil && a.detail.Editing() {
 		help = "esc close · enter confirm"
 	} else {
-		help = "/ filter · p project · o browser · r refresh · q quit · ? help"
+		help = "f filters · p project · o browser · r refresh · q quit · ? help"
 	}
 
 	left := helpStyle.Render(help)
