@@ -755,3 +755,50 @@ func (c *Client) UpdateComment(issueKey, commentID, markdownBody string) error {
 func (c *Client) DeleteComment(issueKey, commentID string) error {
 	return c.deleteReq("/rest/api/3/issue/" + issueKey + "/comment/" + commentID)
 }
+
+// GetLinkTypes returns all available issue link types.
+func (c *Client) GetLinkTypes() ([]models.LinkType, error) {
+	data, err := c.get("/rest/api/3/issueLinkType")
+	if err != nil {
+		return nil, fmt.Errorf("fetching link types: %w", err)
+	}
+	resp, err := decodeJSON[jiraLinkTypesResponse](data)
+	if err != nil {
+		return nil, fmt.Errorf("decoding link types: %w", err)
+	}
+	types := make([]models.LinkType, len(resp.IssueLinkTypes))
+	for i, jlt := range resp.IssueLinkTypes {
+		types[i] = models.LinkType{
+			ID:      jlt.ID,
+			Name:    jlt.Name,
+			Inward:  jlt.Inward,
+			Outward: jlt.Outward,
+		}
+	}
+	return types, nil
+}
+
+// CreateLink creates an issue link between two issues.
+func (c *Client) CreateLink(issueKey, targetKey, linkTypeName, direction string) error {
+	inward := issueKey
+	outward := targetKey
+	if direction == "outward" {
+		inward = targetKey
+		outward = issueKey
+	}
+	payload := map[string]any{
+		"type":         map[string]string{"name": linkTypeName},
+		"inwardIssue":  map[string]string{"key": inward},
+		"outwardIssue": map[string]string{"key": outward},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling link: %w", err)
+	}
+	return c.post("/rest/api/3/issueLink", body)
+}
+
+// DeleteLink deletes an issue link by its ID.
+func (c *Client) DeleteLink(linkID string) error {
+	return c.deleteReq("/rest/api/3/issueLink/" + linkID)
+}

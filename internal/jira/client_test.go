@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -416,5 +417,67 @@ func TestVerifyCredentialsAuthFailure(t *testing.T) {
 	_, err := c.VerifyCredentials()
 	if err == nil {
 		t.Fatal("expected auth error, got nil")
+	}
+}
+
+func TestGetLinkTypes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/3/issueLinkType" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"issueLinkTypes":[{"id":"10000","name":"Blocks","inward":"is blocked by","outward":"blocks"},{"id":"10001","name":"Relates","inward":"relates to","outward":"relates to"}]}`))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "user@test.com", "token")
+	types, err := c.GetLinkTypes()
+	if err != nil {
+		t.Fatalf("GetLinkTypes failed: %v", err)
+	}
+	if len(types) != 2 {
+		t.Fatalf("expected 2 link types, got %d", len(types))
+	}
+	if types[0].Name != "Blocks" || types[0].Inward != "is blocked by" {
+		t.Errorf("unexpected first type: %+v", types[0])
+	}
+}
+
+func TestCreateLink(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/rest/api/3/issueLink" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(201)
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "user@test.com", "token")
+	err := c.CreateLink("TEC-100", "TEC-200", "Blocks", "outward")
+	if err != nil {
+		t.Fatalf("CreateLink failed: %v", err)
+	}
+	inward := gotBody["inwardIssue"].(map[string]any)
+	outward := gotBody["outwardIssue"].(map[string]any)
+	if inward["key"] != "TEC-200" || outward["key"] != "TEC-100" {
+		t.Errorf("unexpected link direction: inward=%v outward=%v", inward, outward)
+	}
+}
+
+func TestDeleteLink(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" || r.URL.Path != "/rest/api/3/issueLink/12345" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "user@test.com", "token")
+	err := c.DeleteLink("12345")
+	if err != nil {
+		t.Fatalf("DeleteLink failed: %v", err)
 	}
 }

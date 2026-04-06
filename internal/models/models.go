@@ -30,6 +30,13 @@ type Transition struct {
 	To   Status
 }
 
+type LinkType struct {
+	ID      string
+	Name    string
+	Inward  string
+	Outward string
+}
+
 type Project struct {
 	ID   string
 	Key  string

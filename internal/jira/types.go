@@ -42,16 +42,24 @@ type jiraAttachment struct {
 	Content  string `json:"content"` // download URL
 }
 
-// jiraADF represents Atlassian Document Format. We extract plain text from it.
+// jiraADF represents Atlassian Document Format, converted to markdown for display.
 type jiraADF struct {
 	Type    string     `json:"type"`
+	Version int        `json:"version,omitempty"`
 	Content []jiraNode `json:"content"`
 }
 
 type jiraNode struct {
-	Type    string     `json:"type"`
-	Text    string     `json:"text,omitempty"`
-	Content []jiraNode `json:"content,omitempty"`
+	Type    string            `json:"type"`
+	Text    string            `json:"text,omitempty"`
+	Content []jiraNode        `json:"content,omitempty"`
+	Attrs   map[string]any    `json:"attrs,omitempty"`
+	Marks   []jiraMark        `json:"marks,omitempty"`
+}
+
+type jiraMark struct {
+	Type  string         `json:"type"`
+	Attrs map[string]any `json:"attrs,omitempty"`
 }
 
 type jiraStatus struct {
@@ -124,4 +132,15 @@ type jiraComment struct {
 type jiraProject struct {
 	Key  string `json:"key"`
 	Name string `json:"name"`
+}
+
+type jiraLinkTypesResponse struct {
+	IssueLinkTypes []jiraIssueLinkType `json:"issueLinkTypes"`
+}
+
+type jiraIssueLinkType struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Inward  string `json:"inward"`
+	Outward string `json:"outward"`
 }
