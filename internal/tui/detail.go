@@ -23,8 +23,7 @@ type detailTab int
 const (
 	tabDetails detailTab = iota
 	tabComments
-	tabSubtasks
-	tabLinks
+	tabAssociations
 	tabAttachments
 )
 
@@ -76,6 +75,22 @@ type Detail struct {
 	OnCommentAdd    func(issueKey, body string) tea.Cmd
 	OnCommentEdit   func(issueKey, commentID, body string) tea.Cmd
 	OnCommentDelete func(issueKey, commentID string) tea.Cmd
+
+	// Link interaction state
+	linkAdding        bool
+	linkTypeDrop      Dropdown
+	linkTargetInput   textinput.Model
+	linkTypeSelected  string
+	linkDirection     string
+	linkTypes         []models.LinkType
+
+	// Link callbacks
+	OnLinkCreate      func(issueKey, targetKey, linkTypeName, direction string) tea.Cmd
+	OnLinkDelete      func(linkID string) tea.Cmd
+
+	// Link delete confirmation
+	confirmLinkDelete   bool
+	confirmLinkDeleteID string
 
 	// Change callbacks — each fires a tea.Cmd that performs the Jira API update
 	OnLabelsChanged   func(issueKey string, labels []string) tea.Cmd
@@ -172,6 +187,12 @@ func NewDetail(issue models.Issue, width, height int) Detail {
 	ci.SetWidth(ciW)
 	ci.SetHeight(4)
 
+	linkTypeDrop := NewSimpleDropdown("Link Type", nil, "Select type...", "", 0)
+	linkTarget := textinput.New()
+	linkTarget.Placeholder = "Issue key (e.g. TEC-123)"
+	linkTarget.CharLimit = 30
+	linkTarget.Prompt = ""
+
 	return Detail{
 		issue:        issue,
 		width:        width,
@@ -186,6 +207,8 @@ func NewDetail(issue models.Issue, width, height int) Detail {
 		labelInput:   li,
 		labelCursor:  -1, // input focused by default
 		commentInput: ci,
+		linkTypeDrop:    linkTypeDrop,
+		linkTargetInput: linkTarget,
 		commentCursor: -1,
 		commentReplyTo: -1,
 	}
@@ -310,22 +333,36 @@ func (d *Detail) SetPriorityOptions(priorities []models.Priority) {
 	d.priorityDrop.SetItems(items)
 }
 
+// SetLinkTypes populates the link type dropdown with available link types.
+func (d *Detail) SetLinkTypes(types []models.LinkType) {
+	d.linkTypes = types
+	var items []DropdownItem
+	for _, lt := range types {
+		items = append(items, DropdownItem{ID: lt.Name + "|outward", Label: lt.Outward})
+		if lt.Inward != lt.Outward {
+			items = append(items, DropdownItem{ID: lt.Name + "|inward", Label: lt.Inward})
+		}
+	}
+	d.linkTypeDrop.SetItems(items)
+}
+
 // Editing returns true when any input field in the detail view is focused.
 func (d Detail) Editing() bool {
 	return d.titleInput.Focused() || d.descFocused ||
 		d.assigneeDrop.IsOpen() || d.statusDrop.IsOpen() ||
 		d.priorityDrop.IsOpen() || d.dueDatePick.IsOpen() ||
 		d.parentDrop.IsOpen() || d.labelsEditing ||
-		d.commentMode != commentIdle || d.confirmDelete
+		d.commentMode != commentIdle || d.confirmDelete ||
+		d.linkAdding || d.confirmLinkDelete
 }
 
 // tabLabels returns the display labels for each tab.
 func (d Detail) tabLabels() []string {
+	assocCount := len(d.issue.Links) + len(d.issue.Subtasks)
 	return []string{
 		"Details",
 		fmt.Sprintf("Comments(%d)", len(d.issue.Comments)),
-		fmt.Sprintf("Subtasks(%d)", len(d.issue.Subtasks)),
-		fmt.Sprintf("Links(%d)", len(d.issue.Links)),
+		fmt.Sprintf("Associations(%d)", assocCount),
 		fmt.Sprintf("Attach(%d)", len(d.issue.Attachments)),
 	}
 }
@@ -479,6 +516,59 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 			return d, nil
 		}
 
+		// Link add flow
+		if d.activeTab == tabAssociations && d.linkAdding {
+			if msg.String() == "esc" {
+				d.cancelLinkAdd()
+				return d, nil
+			}
+			if d.linkTypeDrop.IsOpen() {
+				var cmd tea.Cmd
+				d.linkTypeDrop, cmd = d.linkTypeDrop.Update(msg)
+				if !d.linkTypeDrop.IsOpen() {
+					sel := d.linkTypeDrop.SelectedItem()
+					if sel != nil {
+						parts := strings.SplitN(sel.ID, "|", 2)
+						d.linkTypeSelected = parts[0]
+						d.linkDirection = sel.Label
+						d.linkTargetInput.Focus()
+						return d, d.linkTargetInput.Cursor.BlinkCmd()
+					} else {
+						d.cancelLinkAdd()
+					}
+				}
+				return d, cmd
+			}
+			if d.linkTargetInput.Focused() {
+				if msg.Type == tea.KeyEnter {
+					return d, d.submitLink()
+				}
+				var cmd tea.Cmd
+				d.linkTargetInput, cmd = d.linkTargetInput.Update(msg)
+				return d, cmd
+			}
+			return d, nil
+		}
+
+		// Link delete confirmation
+		if d.confirmLinkDelete {
+			switch msg.String() {
+			case "y":
+				linkID := d.confirmLinkDeleteID
+				d.confirmLinkDelete = false
+				d.confirmLinkDeleteID = ""
+				if d.OnLinkDelete != nil {
+					return d, d.OnLinkDelete(linkID)
+				}
+				return d, nil
+			case "n", "esc":
+				d.confirmLinkDelete = false
+				d.confirmLinkDeleteID = ""
+				return d, nil
+			}
+			return d, nil
+		}
+
 		switch {
 		case key.Matches(msg, detailKeys.Tab1):
 			d.activeTab = tabDetails
@@ -487,12 +577,9 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 			d.activeTab = tabComments
 			d.scrollY = 0
 		case key.Matches(msg, detailKeys.Tab3):
-			d.activeTab = tabSubtasks
+			d.activeTab = tabAssociations
 			d.scrollY = 0
 		case key.Matches(msg, detailKeys.Tab4):
-			d.activeTab = tabLinks
-			d.scrollY = 0
-		case key.Matches(msg, detailKeys.Tab5):
 			d.activeTab = tabAttachments
 			d.scrollY = 0
 		case key.Matches(msg, detailKeys.Down):
@@ -553,6 +640,8 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 				return d, d.handleDetailClick(msg.X, msg.Y)
 			} else if d.activeTab == tabComments {
 				return d, d.handleCommentClick(msg.X, msg.Y-2)
+			} else if d.activeTab == tabAssociations {
+				return d, d.handleAssociationClick(msg.X, msg.Y-2)
 			}
 			return d, nil
 		}
@@ -594,6 +683,18 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 		var cmd tea.Cmd
 		d.commentInput, cmd = d.commentInput.Update(msg)
 		return d, cmd
+	}
+	if d.linkAdding {
+		if d.linkTypeDrop.IsOpen() {
+			var cmd tea.Cmd
+			d.linkTypeDrop, cmd = d.linkTypeDrop.Update(msg)
+			return d, cmd
+		}
+		if d.linkTargetInput.Focused() {
+			var cmd tea.Cmd
+			d.linkTargetInput, cmd = d.linkTargetInput.Update(msg)
+			return d, cmd
+		}
 	}
 	if d.descFocused {
 		var cmd tea.Cmd
@@ -641,6 +742,9 @@ func (d *Detail) blurAll() {
 	d.labelsEditing = false
 	d.labelInput.Blur()
 	d.blurComment()
+	d.cancelLinkAdd()
+	d.confirmLinkDelete = false
+	d.confirmLinkDeleteID = ""
 }
 
 // blurComment resets all comment interaction state.
@@ -733,6 +837,45 @@ func (d *Detail) submitComment() tea.Cmd {
 	return nil
 }
 
+func (d *Detail) startLinkAdd() tea.Cmd {
+	d.blurAll()
+	d.linkAdding = true
+	d.linkTypeSelected = ""
+	d.linkDirection = ""
+	d.linkTargetInput.SetValue("")
+	return d.linkTypeDrop.OpenDropdown()
+}
+
+func (d *Detail) cancelLinkAdd() {
+	d.linkAdding = false
+	d.linkTypeDrop.Close()
+	d.linkTargetInput.Blur()
+	d.linkTargetInput.SetValue("")
+	d.linkTypeSelected = ""
+	d.linkDirection = ""
+}
+
+func (d *Detail) submitLink() tea.Cmd {
+	target := strings.TrimSpace(d.linkTargetInput.Value())
+	if target == "" || d.linkTypeSelected == "" {
+		d.cancelLinkAdd()
+		return nil
+	}
+	issueKey := d.issue.Key
+	typeName := d.linkTypeSelected
+	direction := d.linkDirection
+	d.cancelLinkAdd()
+	if d.OnLinkCreate != nil {
+		return d.OnLinkCreate(issueKey, target, typeName, direction)
+	}
+	return nil
+}
+
+func (d *Detail) startLinkDelete(linkID string) {
+	d.confirmLinkDelete = true
+	d.confirmLinkDeleteID = linkID
+}
+
 // anyOverlayOpen returns true if any dropdown/picker overlay is showing.
 func (d Detail) anyOverlayOpen() bool {
 	return d.assigneeDrop.IsOpen() || d.statusDrop.IsOpen() ||
@@ -810,6 +953,52 @@ func (d *Detail) handleCommentClick(x, y int) tea.Cmd {
 		// Separator
 		if ci < len(d.issue.Comments)-1 {
 			lineY++
+		}
+	}
+
+	return nil
+}
+
+func (d *Detail) handleAssociationClick(x, y int) tea.Cmd {
+	adjustedY := y + d.scrollY
+
+	// "Add link..." prompt (first line when not adding)
+	if !d.linkAdding && adjustedY == 0 {
+		return d.startLinkAdd()
+	}
+
+	// Walk through the rendered layout to find delete buttons
+	lineY := 2 // skip add prompt + separator
+	if d.linkAdding {
+		lineY = 4 // input takes more space
+	}
+
+	if len(d.issue.Links) > 0 {
+		// Reconstruct group order to match rendering
+		groups := make(map[string][]models.IssueLink)
+		var groupOrder []string
+		for _, link := range d.issue.Links {
+			if _, exists := groups[link.Type]; !exists {
+				groupOrder = append(groupOrder, link.Type)
+			}
+			groups[link.Type] = append(groups[link.Type], link)
+		}
+
+		for gi, groupName := range groupOrder {
+			lineY++ // group header
+			for _, link := range groups[groupName] {
+				if adjustedY == lineY {
+					// Check if click is near the ✗ delete button (right side of line)
+					if x >= d.width-10 {
+						d.startLinkDelete(link.ID)
+						return nil
+					}
+				}
+				lineY++
+			}
+			if gi < len(groupOrder)-1 || len(d.issue.Subtasks) > 0 {
+				lineY++ // separator
+			}
 		}
 	}
 
@@ -1236,10 +1425,8 @@ func (d Detail) View() string {
 		switch d.activeTab {
 		case tabComments:
 			baseContent = d.renderCommentsTab()
-		case tabSubtasks:
-			baseContent = d.renderSubtasksTab()
-		case tabLinks:
-			baseContent = d.renderLinksTab()
+		case tabAssociations:
+			baseContent = d.renderAssociationsTab()
 		case tabAttachments:
 			baseContent = d.renderAttachmentsTab()
 		}
@@ -2119,56 +2306,111 @@ func (d Detail) renderCommentInput(label string, width int) string {
 	return top + "\n" + strings.Join(midLines, "\n") + "\n" + bot + "\n" + hint
 }
 
-func (d Detail) renderSubtasksTab() string {
-	if len(d.issue.Subtasks) == 0 {
-		subtle := lipgloss.NewStyle().Foreground(colorSubtle)
-		return "  " + subtle.Render("No subtasks.")
+func (d Detail) renderAssociationsTab() string {
+	var b strings.Builder
+	contentWidth := d.width - 6
+	if contentWidth < 20 {
+		contentWidth = 20
 	}
 
+	typeStyle := lipgloss.NewStyle().Foreground(colorPurple).Bold(true)
 	accentStyle := lipgloss.NewStyle().Foreground(colorAccent)
 	textStyle := lipgloss.NewStyle().Foreground(colorText)
+	subtleStyle := lipgloss.NewStyle().Foreground(colorSubtle)
+	dotStyle := lipgloss.NewStyle().Foreground(colorBorder)
+	deleteStyle := lipgloss.NewStyle().Foreground(colorSubtle)
 
-	var b strings.Builder
-	for _, st := range d.issue.Subtasks {
-		var indicator string
-		switch st.Status.Name {
-		case "Done":
-			indicator = lipgloss.NewStyle().Foreground(colorSuccess).Render("✓")
-		case "In Progress":
-			indicator = lipgloss.NewStyle().Foreground(colorWarning).Render("●")
-		default:
-			indicator = lipgloss.NewStyle().Foreground(colorSubtle).Render("◦")
+	// "Add link..." prompt or active input
+	if d.linkAdding {
+		if d.linkTypeDrop.IsOpen() {
+			b.WriteString("  " + lipgloss.NewStyle().Foreground(colorAccent).Render("Select link type:") + "\n")
+		} else if d.linkTargetInput.Focused() {
+			b.WriteString("  " + lipgloss.NewStyle().Foreground(colorAccent).Render(d.linkDirection) + " ")
+			b.WriteString(d.linkTargetInput.View() + "\n")
+			b.WriteString("  " + subtleStyle.Render("Enter to submit · Esc to cancel") + "\n")
 		}
-		b.WriteString("  " + indicator + " " + accentStyle.Render(st.Key) + " " + textStyle.Render(st.Summary) + " " + StyledStatus(st.Status.Name) + "\n")
-	}
-	return b.String()
-}
-
-func (d Detail) renderLinksTab() string {
-	if len(d.issue.Links) == 0 {
-		subtle := lipgloss.NewStyle().Foreground(colorSubtle)
-		return "  " + subtle.Render("No linked issues.")
+		b.WriteString("\n")
+	} else {
+		addStyle := lipgloss.NewStyle().Foreground(colorSubtle).Italic(true)
+		b.WriteString("  " + addStyle.Render("Add link...") + "\n")
+		b.WriteString("  " + dotStyle.Render(strings.Repeat("─", contentWidth)) + "\n")
 	}
 
-	typeStyle := lipgloss.NewStyle().Foreground(colorPurple)
-	accentStyle := lipgloss.NewStyle().Foreground(colorAccent)
-	textStyle := lipgloss.NewStyle().Foreground(colorText)
-
-	var b strings.Builder
-	for _, link := range d.issue.Links {
-		relType := padRight(link.Type, 20)
-		var issueKey, summary, status string
-		if link.OutwardIssue != nil {
-			issueKey = link.OutwardIssue.Key
-			summary = link.OutwardIssue.Summary
-			status = link.OutwardIssue.Status.Name
-		} else if link.InwardIssue != nil {
-			issueKey = link.InwardIssue.Key
-			summary = link.InwardIssue.Summary
-			status = link.InwardIssue.Status.Name
+	// --- Links grouped by type ---
+	if len(d.issue.Links) > 0 {
+		type groupedLink struct {
+			issueKey string
+			summary  string
+			status   string
+			linkID   string
 		}
-		b.WriteString("  " + typeStyle.Render(relType) + " " + accentStyle.Render(issueKey) + " " + textStyle.Render(summary) + " " + StyledStatus(status) + "\n")
+		groups := make(map[string][]groupedLink)
+		var groupOrder []string
+		for _, link := range d.issue.Links {
+			var gl groupedLink
+			gl.linkID = link.ID
+			if link.OutwardIssue != nil {
+				gl.issueKey = link.OutwardIssue.Key
+				gl.summary = link.OutwardIssue.Summary
+				gl.status = link.OutwardIssue.Status.Name
+			} else if link.InwardIssue != nil {
+				gl.issueKey = link.InwardIssue.Key
+				gl.summary = link.InwardIssue.Summary
+				gl.status = link.InwardIssue.Status.Name
+			}
+			if _, exists := groups[link.Type]; !exists {
+				groupOrder = append(groupOrder, link.Type)
+			}
+			groups[link.Type] = append(groups[link.Type], gl)
+		}
+
+		for gi, groupName := range groupOrder {
+			b.WriteString("  " + typeStyle.Render(groupName) + "\n")
+			for _, gl := range groups[groupName] {
+				sumW := contentWidth - len(gl.issueKey) - 18
+				if sumW < 10 {
+					sumW = 10
+				}
+				line := "    " + accentStyle.Render(gl.issueKey) + " " + textStyle.Render(truncStr(gl.summary, sumW)) + " " + StyledStatus(gl.status)
+				// Delete button
+				if d.confirmLinkDelete && d.confirmLinkDeleteID == gl.linkID {
+					line = "    " + lipgloss.NewStyle().Foreground(colorError).Render("Delete this link? ") +
+						lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("[y]") +
+						lipgloss.NewStyle().Foreground(colorSubtle).Render("es / ") +
+						lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("[n]") +
+						lipgloss.NewStyle().Foreground(colorSubtle).Render("o")
+				} else {
+					line += "  " + deleteStyle.Render("✗")
+				}
+				b.WriteString(line + "\n")
+			}
+			if gi < len(groupOrder)-1 || len(d.issue.Subtasks) > 0 {
+				b.WriteString("  " + dotStyle.Render("·  ·  ·") + "\n")
+			}
+		}
 	}
+
+	// --- Subtasks ---
+	if len(d.issue.Subtasks) > 0 {
+		b.WriteString("  " + typeStyle.Render("Subtasks") + "\n")
+		for _, st := range d.issue.Subtasks {
+			var indicator string
+			switch st.Status.Name {
+			case "Done":
+				indicator = lipgloss.NewStyle().Foreground(colorSuccess).Render("✓")
+			case "In Progress":
+				indicator = lipgloss.NewStyle().Foreground(colorWarning).Render("●")
+			default:
+				indicator = lipgloss.NewStyle().Foreground(colorSubtle).Render("◦")
+			}
+			b.WriteString("    " + indicator + " " + accentStyle.Render(st.Key) + " " + textStyle.Render(st.Summary) + " " + StyledStatus(st.Status.Name) + "\n")
+		}
+	}
+
+	if len(d.issue.Links) == 0 && len(d.issue.Subtasks) == 0 {
+		return "  " + subtleStyle.Render("No associations.")
+	}
+
 	return b.String()
 }
 

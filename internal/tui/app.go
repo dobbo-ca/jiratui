@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -59,6 +60,10 @@ const (
 	stateList
 )
 
+// minDetailWidth is the minimum width for the detail pane.
+// Ensures the 4-column layout (row 2) and calendar overlay (min 24 cols) render properly.
+const minDetailWidth = 80
+
 // defaultListWidth calculates the default list pane width (~35% of terminal).
 func defaultListWidth(totalWidth int) int {
 	w := totalWidth * 35 / 100
@@ -103,6 +108,31 @@ type assignableUsersMsg struct {
 	projectKey string
 }
 
+// boardAssigneesMsg carries unique assignees from all project issues.
+type boardAssigneesMsg struct {
+	users      []models.User
+	projectKey string
+}
+
+func fetchBoardAssignees(client *jira.Client, projectKey string) tea.Cmd {
+	return func() tea.Msg {
+		jql := fmt.Sprintf(`project = "%s" AND assignee IS NOT EMPTY ORDER BY updated DESC`, projectKey)
+		result, err := client.SearchIssues(jql, 100, "")
+		if err != nil {
+			return nil
+		}
+		seen := make(map[string]bool)
+		var users []models.User
+		for _, issue := range result.Issues {
+			if issue.Assignee != nil && !seen[issue.Assignee.AccountID] {
+				seen[issue.Assignee.AccountID] = true
+				users = append(users, *issue.Assignee)
+			}
+		}
+		return boardAssigneesMsg{users: users, projectKey: projectKey}
+	}
+}
+
 // transitionsMsg carries fetched transitions for an issue.
 type transitionsMsg struct {
 	transitions []models.Transition
@@ -119,11 +149,11 @@ func fetchIssueDetail(client *jira.Client, key string) tea.Cmd {
 	}
 }
 
-func fetchAssignableUsers(client *jira.Client, projectKey string) tea.Cmd {
+func searchAssignableUsers(client *jira.Client, query, projectKey string) tea.Cmd {
 	return func() tea.Msg {
-		users, err := client.GetAssignableUsers(projectKey)
+		users, err := client.SearchUsers(query, projectKey)
 		if err != nil {
-			return nil // silently fail — dropdown just stays empty
+			return nil
 		}
 		return assignableUsersMsg{users: users, projectKey: projectKey}
 	}
@@ -163,7 +193,7 @@ type parentSearchResultsMsg struct {
 func searchParentIssues(client *jira.Client, query, forKey string) tea.Cmd {
 	return func() tea.Msg {
 		escaped := strings.ReplaceAll(query, `"`, `\"`)
-		jql := fmt.Sprintf(`summary ~ "%s" ORDER BY updated DESC`, escaped)
+		jql := fmt.Sprintf(`summary ~ "%s" AND issuetype = Epic ORDER BY updated DESC`, escaped)
 		result, err := client.SearchIssues(jql, 10, "")
 		if err != nil {
 			return nil
@@ -176,6 +206,128 @@ func searchParentIssues(client *jira.Client, query, forKey string) tea.Cmd {
 			}
 		}
 		return parentSearchResultsMsg{items: items, forKey: forKey}
+	}
+}
+
+type labelsUpdatedMsg struct {
+	forKey string
+	labels []string
+}
+
+func updateLabels(client *jira.Client, issueKey string, labels []string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.UpdateLabels(issueKey, labels)
+		if err != nil {
+			logDebug("UpdateLabels(%s) error: %v", issueKey, err)
+			return nil
+		}
+		return labelsUpdatedMsg{forKey: issueKey, labels: labels}
+	}
+}
+
+type fieldUpdatedMsg struct {
+	forKey string
+	field  string
+}
+
+func updateField(client *jira.Client, issueKey, field, value string) tea.Cmd {
+	return func() tea.Msg {
+		var err error
+		switch field {
+		case "summary":
+			err = client.UpdateSummary(issueKey, value)
+		case "assignee":
+			err = client.UpdateAssignee(issueKey, value)
+		case "priority":
+			err = client.UpdatePriority(issueKey, value)
+		case "duedate":
+			err = client.UpdateDueDate(issueKey, value)
+		case "parent":
+			err = client.UpdateParent(issueKey, value)
+		}
+		if err != nil {
+			logDebug("updateField(%s, %s, %s) error: %v", issueKey, field, value, err)
+			return nil
+		}
+		logDebug("updateField(%s, %s, %s) success", issueKey, field, value)
+		return fieldUpdatedMsg{forKey: issueKey, field: field}
+	}
+}
+
+func transitionIssue(client *jira.Client, issueKey, transitionID string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.TransitionIssue(issueKey, transitionID)
+		if err != nil {
+			logDebug("transitionIssue(%s, %s) error: %v", issueKey, transitionID, err)
+			return nil
+		}
+		logDebug("transitionIssue(%s, %s) success", issueKey, transitionID)
+		return fieldUpdatedMsg{forKey: issueKey, field: "status"}
+	}
+}
+
+// Comment action messages
+type commentAddedMsg struct{ forKey string }
+type commentEditedMsg struct{ forKey string }
+type commentDeletedMsg struct{ forKey string }
+
+type commentsRefreshedMsg struct {
+	forKey   string
+	comments []models.Comment
+}
+
+func refreshComments(client *jira.Client, issueKey string) tea.Cmd {
+	return func() tea.Msg {
+		issue, err := client.GetIssue(issueKey)
+		if err != nil {
+			logDebug("refreshComments(%s) error: %v", issueKey, err)
+			return nil
+		}
+		return commentsRefreshedMsg{forKey: issueKey, comments: issue.Comments}
+	}
+}
+
+func addComment(client *jira.Client, issueKey, body string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.AddComment(issueKey, body)
+		if err != nil {
+			logDebug("AddComment(%s) error: %v", issueKey, err)
+			return nil
+		}
+		logDebug("AddComment(%s) success", issueKey)
+		return commentAddedMsg{forKey: issueKey}
+	}
+}
+
+func editComment(client *jira.Client, issueKey, commentID, body string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.UpdateComment(issueKey, commentID, body)
+		if err != nil {
+			logDebug("UpdateComment(%s, %s) error: %v", issueKey, commentID, err)
+			return nil
+		}
+		logDebug("UpdateComment(%s, %s) success", issueKey, commentID)
+		return commentEditedMsg{forKey: issueKey}
+	}
+}
+
+func deleteComment(client *jira.Client, issueKey, commentID string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.DeleteComment(issueKey, commentID)
+		if err != nil {
+			logDebug("DeleteComment(%s, %s) error: %v", issueKey, commentID, err)
+			return nil
+		}
+		logDebug("DeleteComment(%s, %s) success", issueKey, commentID)
+		return commentDeletedMsg{forKey: issueKey}
+	}
+}
+
+func logDebug(format string, args ...interface{}) {
+	f, _ := os.OpenFile("/tmp/jiratui_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if f != nil {
+		fmt.Fprintf(f, format+"\n", args...)
+		f.Close()
 	}
 }
 
@@ -232,6 +384,7 @@ type App struct {
 	projectDrop   Dropdown            // project selector dropdown
 	profileDrop   Dropdown            // workspace/profile selector dropdown
 	profileNames  []string            // available profile names
+	myAccountID   string              // current user's Jira account ID
 	err           error
 	width         int
 	height        int
@@ -274,6 +427,9 @@ func NewApp(client *jira.Client, profileName, initialProject, configPath string,
 	profileDrop := NewSimpleDropdown("Workspace", profileItems, profileName, profileName, 25)
 	profileDrop.SetValueColor(colorSuccess)
 
+	// Fetch current user's account ID (best effort)
+	myAccountID, _, _ := client.GetMyself()
+
 	return App{
 		state:        stateLoading,
 		spinner:      s,
@@ -285,6 +441,7 @@ func NewApp(client *jira.Client, profileName, initialProject, configPath string,
 		projectDrop:  projectDrop,
 		profileDrop:  profileDrop,
 		profileNames: profileNames,
+		myAccountID:  myAccountID,
 	}
 }
 
@@ -363,8 +520,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.listWidth == 0 {
 			a.listWidth = defaultListWidth(msg.Width)
 		}
-		if a.listWidth > a.usableWidth()-30 {
-			a.listWidth = msg.Width - 30
+		if a.listWidth > a.usableWidth()-minDetailWidth {
+			a.listWidth = a.usableWidth() - minDetailWidth
 		}
 		if a.listWidth < 20 {
 			a.listWidth = 20
@@ -473,7 +630,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Tab switching — forward 1-5 to detail if it exists
 			if a.detail != nil && !a.list.filtering {
-				if msg.String() >= "1" && msg.String() <= "5" {
+				if msg.String() >= "1" && msg.String() <= "4" {
 					d := *a.detail
 					d, _ = d.Update(msg)
 					a.detail = &d
@@ -542,26 +699,81 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			contentHeight := a.height - 2
 			detailWidth := a.detailPaneWidth()
 			d := NewDetail(msg.issue, detailWidth, contentHeight)
+			d.myAccountID = a.myAccountID
 			issueKey := msg.issue.Key
 			client := a.client
 			d.SetParentSearchFunc(func(query string) tea.Cmd {
 				return searchParentIssues(client, query, issueKey)
 			})
+			d.OnLabelsChanged = func(key string, labels []string) tea.Cmd {
+				return updateLabels(client, key, labels)
+			}
+			d.OnSummaryChanged = func(key, summary string) tea.Cmd {
+				return updateField(client, key, "summary", summary)
+			}
+			d.OnAssigneeChanged = func(key, accountID string) tea.Cmd {
+				return updateField(client, key, "assignee", accountID)
+			}
+			d.OnStatusChanged = func(key, transitionID string) tea.Cmd {
+				return transitionIssue(client, key, transitionID)
+			}
+			d.OnPriorityChanged = func(key, priorityID string) tea.Cmd {
+				return updateField(client, key, "priority", priorityID)
+			}
+			d.OnDueDateChanged = func(key, dueDate string) tea.Cmd {
+				return updateField(client, key, "duedate", dueDate)
+			}
+			d.OnParentChanged = func(key, parentKey string) tea.Cmd {
+				return updateField(client, key, "parent", parentKey)
+			}
+			d.OnCommentAdd = func(key, body string) tea.Cmd {
+				return addComment(client, key, body)
+			}
+			d.OnCommentEdit = func(key, commentID, body string) tea.Cmd {
+				return editComment(client, key, commentID, body)
+			}
+			d.OnCommentDelete = func(key, commentID string) tea.Cmd {
+				return deleteComment(client, key, commentID)
+			}
+			// Set up async search for when user types in assignee search
+			projectKey := msg.issue.ProjectKey
+			d.assigneeDrop.OnSearch = func(query string) tea.Cmd {
+				return searchAssignableUsers(client, query, projectKey)
+			}
+			d.assigneeDrop.minSearchLen = 0
 			a.detail = &d
 			a.detailLoading = false
 			// Fetch dropdown data in parallel
 			return a, tea.Batch(
-				fetchAssignableUsers(a.client, msg.issue.ProjectKey),
+				fetchBoardAssignees(a.client, msg.issue.ProjectKey),
 				fetchTransitions(a.client, msg.issue.Key),
 				fetchPriorities(a.client),
 			)
 		}
 		return a, nil
 
-	case assignableUsersMsg:
+	case boardAssigneesMsg:
+		// Default assignee list: users with issues on the board
 		if a.detail != nil {
 			d := *a.detail
-			d.SetAssigneeOptions(msg.users)
+			d.SetBoardAssignees(msg.users, a.myAccountID)
+			a.detail = &d
+		}
+		return a, nil
+
+	case assignableUsersMsg:
+		// Search results for assignee dropdown
+		if a.detail != nil {
+			d := *a.detail
+			items := make([]DropdownItem, len(msg.users))
+			for i, u := range msg.users {
+				label := u.DisplayName
+				if u.AccountID == a.myAccountID {
+					label += " (me)"
+				}
+				items[i] = DropdownItem{ID: u.AccountID, Label: label}
+			}
+			d.assigneeDrop.SetItems(items)
 			a.detail = &d
 		}
 		return a, nil
@@ -593,9 +805,56 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dropdownSearchTick:
 		if a.detail != nil {
 			d := *a.detail
-			cmd := d.parentDrop.HandleSearchTick(msg)
+			var cmd tea.Cmd
+			switch msg.label {
+			case "Parent":
+				cmd = d.parentDrop.HandleSearchTick(msg)
+			case "Assignee":
+				cmd = d.assigneeDrop.HandleSearchTick(msg)
+			}
 			a.detail = &d
 			return a, cmd
+		}
+		return a, nil
+
+	case labelsUpdatedMsg:
+		if a.detail != nil && msg.forKey == a.detailKey {
+			d := *a.detail
+			d.issue.Labels = msg.labels
+			a.detail = &d
+		}
+		return a, nil
+
+	case fieldUpdatedMsg:
+		// Field update confirmed — re-fetch transitions if status changed
+		if msg.field == "status" && a.detail != nil && msg.forKey == a.detailKey {
+			return a, fetchTransitions(a.client, msg.forKey)
+		}
+		return a, nil
+
+	case commentAddedMsg:
+		if msg.forKey == a.detailKey {
+			return a, refreshComments(a.client, msg.forKey)
+		}
+		return a, nil
+
+	case commentEditedMsg:
+		if msg.forKey == a.detailKey {
+			return a, refreshComments(a.client, msg.forKey)
+		}
+		return a, nil
+
+	case commentDeletedMsg:
+		if msg.forKey == a.detailKey {
+			return a, refreshComments(a.client, msg.forKey)
+		}
+		return a, nil
+
+	case commentsRefreshedMsg:
+		if a.detail != nil && msg.forKey == a.detailKey {
+			d := *a.detail
+			d.issue.Comments = msg.comments
+			a.detail = &d
 		}
 		return a, nil
 
@@ -790,15 +1049,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if mouseMsg.Action == tea.MouseActionRelease {
 				a.dragging = false
-				return a, nil
+				// Don't swallow wheel events that happen to have release action
+				if mouseMsg.Button != tea.MouseButtonWheelDown && mouseMsg.Button != tea.MouseButtonWheelUp {
+					return a, nil
+				}
 			}
 			if a.dragging && mouseMsg.Action == tea.MouseActionMotion {
 				newWidth := mouseMsg.X
 				if newWidth < 20 {
 					newWidth = 20
 				}
-				if newWidth > a.usableWidth()-30 {
-					newWidth = a.usableWidth() - 30
+				maxListW := a.usableWidth() - minDetailWidth
+				if maxListW < 20 {
+					maxListW = 20
+				}
+				if newWidth > maxListW {
+					newWidth = maxListW
 				}
 				a.listWidth = newWidth
 				// Update detail dimensions
@@ -821,8 +1087,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				adjusted := mouseMsg
 				adjusted.X = mouseMsg.X - listW - 1
 				d := *a.detail
-				d, _ = d.Update(adjusted)
+				var cmd tea.Cmd
+				d, cmd = d.Update(adjusted)
 				a.detail = &d
+				return a, cmd
 			}
 			return a, nil
 		}
