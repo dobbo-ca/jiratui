@@ -46,35 +46,6 @@ func TestRenderRowUnassigned(t *testing.T) {
 	}
 }
 
-func TestFilterIssues(t *testing.T) {
-	issues := []models.Issue{
-		{Key: "PROJ-1", Summary: "Fix login bug", Status: models.Status{Name: "To Do"}},
-		{Key: "PROJ-2", Summary: "Add dashboard", Status: models.Status{Name: "In Progress"}},
-		{Key: "PROJ-3", Summary: "Update API docs", Status: models.Status{Name: "Done"}},
-	}
-
-	tests := []struct {
-		query string
-		want  int
-	}{
-		{"", 3},
-		{"login", 1},
-		{"PROJ-2", 1},
-		{"proj", 3},
-		{"dashboard", 1},
-		{"nonexistent", 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.query, func(t *testing.T) {
-			got := filterIssues(issues, tt.query)
-			if len(got) != tt.want {
-				t.Errorf("filterIssues(%q) returned %d issues, want %d", tt.query, len(got), tt.want)
-			}
-		})
-	}
-}
-
 func TestRowColor(t *testing.T) {
 	now := time.Now()
 

@@ -8,7 +8,6 @@ type ListKeyMap struct {
 	Down     key.Binding
 	PageUp   key.Binding
 	PageDown key.Binding
-	Filter   key.Binding
 	Refresh  key.Binding
 	Open     key.Binding
 	Quit     key.Binding
@@ -31,10 +30,6 @@ var listKeys = ListKeyMap{
 	PageDown: key.NewBinding(
 		key.WithKeys("pgdown"),
 		key.WithHelp("pgdown", "page down"),
-	),
-	Filter: key.NewBinding(
-		key.WithKeys("/"),
-		key.WithHelp("/", "filter"),
 	),
 	Refresh: key.NewBinding(
 		key.WithKeys("r"),

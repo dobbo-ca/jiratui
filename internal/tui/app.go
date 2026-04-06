@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 
@@ -323,6 +325,174 @@ func deleteComment(client *jira.Client, issueKey, commentID string) tea.Cmd {
 	}
 }
 
+// Link action messages
+type linkTypesMsg struct {
+	types []models.LinkType
+}
+type linkCreatedMsg struct{ forKey string }
+type linkDeletedMsg struct{ forKey string }
+type linksRefreshedMsg struct {
+	forKey string
+	links  []models.IssueLink
+}
+
+func fetchLinkTypes(client *jira.Client) tea.Cmd {
+	return func() tea.Msg {
+		types, err := client.GetLinkTypes()
+		if err != nil {
+			logDebug("GetLinkTypes error: %v", err)
+			return nil
+		}
+		return linkTypesMsg{types: types}
+	}
+}
+
+func createLink(client *jira.Client, issueKey, targetKey, linkTypeName, direction string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.CreateLink(issueKey, targetKey, linkTypeName, direction)
+		if err != nil {
+			logDebug("CreateLink(%s, %s, %s) error: %v", issueKey, targetKey, linkTypeName, err)
+			return nil
+		}
+		return linkCreatedMsg{forKey: issueKey}
+	}
+}
+
+func deleteLink(client *jira.Client, issueKey, linkID string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.DeleteLink(linkID)
+		if err != nil {
+			logDebug("DeleteLink(%s) error: %v", linkID, err)
+			return nil
+		}
+		return linkDeletedMsg{forKey: issueKey}
+	}
+}
+
+func refreshLinks(client *jira.Client, issueKey string) tea.Cmd {
+	return func() tea.Msg {
+		issue, err := client.GetIssue(issueKey)
+		if err != nil {
+			logDebug("refreshLinks(%s) error: %v", issueKey, err)
+			return nil
+		}
+		return linksRefreshedMsg{forKey: issueKey, links: issue.Links}
+	}
+}
+
+type attachmentOpenedMsg struct{}
+
+func openAttachment(client *jira.Client, att models.Attachment) tea.Cmd {
+	return func() tea.Msg {
+		data, err := client.DownloadURL(att.URL)
+		if err != nil {
+			logDebug("DownloadAttachment(%s) error: %v", att.Filename, err)
+			return nil
+		}
+		tmpFile, err := os.CreateTemp("", "jiratui-*-"+att.Filename)
+		if err != nil {
+			logDebug("CreateTemp error: %v", err)
+			return nil
+		}
+		if _, err := tmpFile.Write(data); err != nil {
+			tmpFile.Close()
+			logDebug("Write temp file error: %v", err)
+			return nil
+		}
+		tmpFile.Close()
+
+		// Open with system viewer
+		cmd := exec.Command("open", tmpFile.Name())
+		if err := cmd.Start(); err != nil {
+			logDebug("open command error: %v", err)
+		}
+		return attachmentOpenedMsg{}
+	}
+}
+
+type attachmentUploadedMsg struct{ forKey string }
+type attachmentUploadCancelledMsg struct{}
+
+// openFileDialog opens a native file picker and returns the selected path.
+// Uses osascript on macOS, zenity on Linux, powershell on Windows.
+func openFileDialog() (string, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		out, err := exec.Command("osascript", "-e",
+			`POSIX path of (choose file with prompt "Select file to upload")`).Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	case "windows":
+		out, err := exec.Command("powershell", "-Command",
+			`Add-Type -AssemblyName System.Windows.Forms; `+
+				`$f = New-Object System.Windows.Forms.OpenFileDialog; `+
+				`if ($f.ShowDialog() -eq 'OK') { $f.FileName } else { exit 1 }`).Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	default: // linux
+		out, err := exec.Command("zenity", "--file-selection",
+			"--title=Select file to upload").Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+}
+
+func uploadAttachment(client *jira.Client, issueKey string) tea.Cmd {
+	return func() tea.Msg {
+		filePath, err := openFileDialog()
+		if err != nil {
+			logDebug("File dialog: %v", err)
+			return attachmentUploadCancelledMsg{}
+		}
+		if filePath == "" {
+			return attachmentUploadCancelledMsg{}
+		}
+
+		err = client.UploadAttachment(issueKey, filePath)
+		if err != nil {
+			logDebug("UploadAttachment(%s, %s) error: %v", issueKey, filePath, err)
+			return attachmentUploadCancelledMsg{}
+		}
+		logDebug("UploadAttachment(%s, %s) success", issueKey, filePath)
+		return attachmentUploadedMsg{forKey: issueKey}
+	}
+}
+
+type attachmentDeletedMsg struct{ forKey string }
+
+func deleteAttachment(client *jira.Client, issueKey, attachmentID string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.DeleteAttachment(attachmentID)
+		if err != nil {
+			logDebug("DeleteAttachment(%s) error: %v", attachmentID, err)
+			return nil
+		}
+		return attachmentDeletedMsg{forKey: issueKey}
+	}
+}
+
+type attachmentsRefreshedMsg struct {
+	forKey      string
+	attachments []models.Attachment
+}
+
+func refreshAttachments(client *jira.Client, issueKey string) tea.Cmd {
+	return func() tea.Msg {
+		issue, err := client.GetIssue(issueKey)
+		if err != nil {
+			logDebug("refreshAttachments(%s) error: %v", issueKey, err)
+			return nil
+		}
+		return attachmentsRefreshedMsg{forKey: issueKey, attachments: issue.Attachments}
+	}
+}
+
 func logDebug(format string, args ...interface{}) {
 	f, _ := os.OpenFile("/tmp/jiratui_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if f != nil {
@@ -601,7 +771,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "?" {
 			if a.showHelp {
 				a.showHelp = false
-			} else if !a.list.filtering {
+			} else {
 				a.showHelp = true
 			}
 			return a, nil
@@ -613,15 +783,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if a.state == stateList {
 			// Quit only when not filtering
-			if msg.String() == "q" && !a.list.filtering {
+			if msg.String() == "q" {
 				return a, tea.Quit
 			}
 			// Project selector
-			if msg.String() == "p" && !a.list.filtering {
+			if msg.String() == "p" {
 				return a, a.projectDrop.OpenDropdown()
 			}
 			// Refresh
-			if msg.String() == "r" && !a.list.filtering {
+			if msg.String() == "r" {
 				a.state = stateLoading
 				a.err = nil
 				a.detail = nil
@@ -629,7 +799,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, tea.Batch(a.spinner.Tick, fetchIssues(a.client, a.sort, a.projectKey))
 			}
 			// Tab switching — forward 1-5 to detail if it exists
-			if a.detail != nil && !a.list.filtering {
+			if a.detail != nil {
 				if msg.String() >= "1" && msg.String() <= "4" {
 					d := *a.detail
 					d, _ = d.Update(msg)
@@ -735,6 +905,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			d.OnCommentDelete = func(key, commentID string) tea.Cmd {
 				return deleteComment(client, key, commentID)
 			}
+			d.OnLinkCreate = func(key, targetKey, typeName, direction string) tea.Cmd {
+				return createLink(client, key, targetKey, typeName, direction)
+			}
+			d.OnLinkDelete = func(linkID string) tea.Cmd {
+				return deleteLink(client, issueKey, linkID)
+			}
+			d.OnNavigate = func(targetKey string) tea.Cmd {
+				return func() tea.Msg {
+					return cursorChangedMsg{issueKey: targetKey}
+				}
+			}
+			d.OnAttachmentOpen = func(att models.Attachment) tea.Cmd {
+				return openAttachment(client, att)
+			}
+			d.OnAttachmentUpload = func(key, _ string) tea.Cmd {
+				return uploadAttachment(client, key)
+			}
+			d.OnAttachmentDelete = func(key, attachmentID string) tea.Cmd {
+				return deleteAttachment(client, key, attachmentID)
+			}
 			// Set up async search for when user types in assignee search
 			projectKey := msg.issue.ProjectKey
 			d.assigneeDrop.OnSearch = func(query string) tea.Cmd {
@@ -748,6 +938,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fetchBoardAssignees(a.client, msg.issue.ProjectKey),
 				fetchTransitions(a.client, msg.issue.Key),
 				fetchPriorities(a.client),
+				fetchLinkTypes(a.client),
 			)
 		}
 		return a, nil
@@ -858,6 +1049,75 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case linkTypesMsg:
+		if a.detail != nil {
+			d := *a.detail
+			d.SetLinkTypes(msg.types)
+			a.detail = &d
+		}
+		return a, nil
+
+	case attachmentOpenedMsg:
+		if a.detail != nil {
+			d := *a.detail
+			d.downloadingAttach = ""
+			a.detail = &d
+		}
+		return a, nil
+
+	case attachmentUploadedMsg:
+		if a.detail != nil {
+			d := *a.detail
+			d.uploadingAttach = false
+			a.detail = &d
+		}
+		if msg.forKey == a.detailKey {
+			return a, refreshAttachments(a.client, msg.forKey)
+		}
+		return a, nil
+
+	case attachmentsRefreshedMsg:
+		if a.detail != nil && msg.forKey == a.detailKey {
+			d := *a.detail
+			d.issue.Attachments = msg.attachments
+			a.detail = &d
+		}
+		return a, nil
+
+	case attachmentUploadCancelledMsg:
+		if a.detail != nil {
+			d := *a.detail
+			d.uploadingAttach = false
+			a.detail = &d
+		}
+		return a, nil
+
+	case attachmentDeletedMsg:
+		if msg.forKey == a.detailKey {
+			return a, refreshAttachments(a.client, msg.forKey)
+		}
+		return a, nil
+
+	case linkCreatedMsg:
+		if msg.forKey == a.detailKey {
+			return a, refreshLinks(a.client, msg.forKey)
+		}
+		return a, nil
+
+	case linkDeletedMsg:
+		if msg.forKey == a.detailKey {
+			return a, refreshLinks(a.client, msg.forKey)
+		}
+		return a, nil
+
+	case linksRefreshedMsg:
+		if a.detail != nil && msg.forKey == a.detailKey {
+			d := *a.detail
+			d.issue.Links = msg.links
+			a.detail = &d
+		}
+		return a, nil
+
 	case projectsMsg:
 		a.projects = msg.projects
 		// Projects already sorted by name from API; re-sort by key
@@ -940,7 +1200,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Handle clicks on help bar (last line) for project/profile
 			if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
 				helpBarY := a.height - 1
-				if mouseMsg.Y == helpBarY && !a.list.filtering {
+				if mouseMsg.Y == helpBarY {
 					projectX, profileX := a.helpBarClickZones()
 					if mouseMsg.X >= profileX {
 						return a, a.profileDrop.OpenDropdown()
@@ -1323,8 +1583,6 @@ func (a App) renderHelpBar() string {
 		help = "↑↓ navigate · enter select · esc close"
 	} else if a.detail != nil && a.detail.Editing() {
 		help = "esc close · enter confirm"
-	} else if a.state == stateList && a.list.filtering {
-		help = "enter confirm · esc clear"
 	} else {
 		help = "/ filter · p project · o browser · r refresh · q quit · ? help"
 	}

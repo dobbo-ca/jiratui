@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/christopherdobbyn/jiratui/internal/models"
@@ -46,8 +45,6 @@ const (
 
 // List is the Bubble Tea model for the issue list view.
 type List struct {
-	filter      textinput.Model
-	filtering   bool
 	issues      []models.Issue
 	filtered    []models.Issue
 	cursor      int
@@ -73,17 +70,12 @@ func maxKeyWidth(issues []models.Issue) int {
 
 // NewList creates a new list model with the given issues.
 func NewList(issues []models.Issue, width, height int) List {
-	ti := textinput.New()
-	ti.Placeholder = "Filter by key or summary..."
-	ti.CharLimit = 100
-
 	return List{
 		issues:      issues,
 		filtered:    issues,
-		filter:      ti,
 		width:       width,
 		height:      height,
-		keyColWidth: maxKeyWidth(issues) + 2, // 1 space each side
+		keyColWidth: maxKeyWidth(issues) + 2,
 	}
 }
 
@@ -96,11 +88,7 @@ func (l *List) summaryWidth() int {
 }
 
 func (l *List) visibleRows() int {
-	// Reserve: status bar(1) + header(1) + separator(1) + help bar(1) + padding(1)
 	h := l.height - 5
-	if l.filtering {
-		h--
-	}
 	if h < 1 {
 		h = 1
 	}
@@ -210,21 +198,6 @@ func (l List) renderRow(issue models.Issue, selected bool) string {
 	return prio + rest
 }
 
-func filterIssues(issues []models.Issue, query string) []models.Issue {
-	if query == "" {
-		return issues
-	}
-	q := strings.ToLower(query)
-	var result []models.Issue
-	for _, issue := range issues {
-		if strings.Contains(strings.ToLower(issue.Key), q) ||
-			strings.Contains(strings.ToLower(issue.Summary), q) {
-			result = append(result, issue)
-		}
-	}
-	return result
-}
-
 func relativeTime(t time.Time) string {
 	d := time.Since(t)
 	switch {
@@ -250,35 +223,7 @@ func (l List) Init() tea.Cmd {
 func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if l.filtering {
-			switch {
-			case key.Matches(msg, listKeys.Escape):
-				l.filtering = false
-				l.filter.SetValue("")
-				l.filter.Blur()
-				l.filtered = l.issues
-				l.cursor = 0
-				l.offset = 0
-				return l, l.emitCursorChanged()
-			case msg.Type == tea.KeyEnter:
-				l.filtering = false
-				l.filter.Blur()
-				return l, l.emitCursorChanged()
-			default:
-				var cmd tea.Cmd
-				l.filter, cmd = l.filter.Update(msg)
-				l.filtered = filterIssues(l.issues, l.filter.Value())
-				l.cursor = 0
-				l.offset = 0
-				return l, cmd
-			}
-		}
-
 		switch {
-		case key.Matches(msg, listKeys.Filter):
-			l.filtering = true
-			l.filter.Focus()
-			return l, l.filter.Cursor.BlinkCmd()
 		case key.Matches(msg, listKeys.Open):
 			if l.cursor < len(l.filtered) {
 				_ = browser.OpenURL(l.filtered[l.cursor].BrowseURL)
@@ -352,23 +297,17 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 
 		switch msg.Button {
 		case tea.MouseButtonWheelDown:
-			prev := l.cursor
-			if l.cursor < len(l.filtered)-1 {
-				l.cursor++
-				l.clampCursor()
+			maxOffset := len(l.filtered) - l.visibleRows()
+			if maxOffset < 0 {
+				maxOffset = 0
 			}
-			if l.cursor != prev {
-				return l, l.emitCursorChanged()
+			if l.offset < maxOffset {
+				l.offset++
 			}
 			return l, nil
 		case tea.MouseButtonWheelUp:
-			prev := l.cursor
-			if l.cursor > 0 {
-				l.cursor--
-				l.clampCursor()
-			}
-			if l.cursor != prev {
-				return l, l.emitCursorChanged()
+			if l.offset > 0 {
+				l.offset--
 			}
 			return l, nil
 		case tea.MouseButtonLeft:
@@ -388,11 +327,7 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 				return l, func() tea.Msg { return sortClickMsg{column: "summary"} }
 			}
 
-			// Header takes 2 lines, filter takes 1 if active
 			headerOffset := 2
-			if l.filtering {
-				headerOffset++
-			}
 			clickedRow := msg.Y - headerOffset + l.offset
 			if clickedRow >= 0 && clickedRow < len(l.filtered) {
 				prev := l.cursor
@@ -423,15 +358,6 @@ func (l List) Update(msg tea.Msg) (List, tea.Cmd) {
 // View renders the list.
 func (l List) View() string {
 	var b strings.Builder
-
-	if l.filtering {
-		filterStyle := lipgloss.NewStyle().
-			Foreground(colorAccent).
-			PaddingLeft(1)
-		b.WriteString(filterStyle.Render("/ "))
-		b.WriteString(l.filter.View())
-		b.WriteString("\n")
-	}
 
 	b.WriteString(l.renderHeader())
 	b.WriteString("\n")
@@ -536,7 +462,7 @@ func (l List) ViewWithWidth(width, height int) string {
 // SetIssues replaces the issue data and rebuilds.
 func (l *List) SetIssues(issues []models.Issue) {
 	l.issues = issues
-	l.filtered = filterIssues(issues, l.filter.Value())
+	l.filtered = issues
 	l.cursor = 0
 	l.offset = 0
 }
