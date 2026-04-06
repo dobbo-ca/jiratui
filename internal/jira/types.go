@@ -144,3 +144,11 @@ type jiraIssueLinkType struct {
 	Inward  string `json:"inward"`
 	Outward string `json:"outward"`
 }
+
+// jiraProjectStatusEntry is one element of the array returned by
+// GET /rest/api/3/project/{key}/statuses — one per issue type.
+type jiraProjectStatusEntry struct {
+	ID       string       `json:"id"`
+	Name     string       `json:"name"` // issue type name
+	Statuses []jiraStatus `json:"statuses"`
+}

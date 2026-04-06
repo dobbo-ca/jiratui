@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -68,6 +71,70 @@ func (c *Client) get(path string) ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+// DownloadURL fetches raw bytes from an absolute URL with auth headers.
+func (c *Client) DownloadURL(absoluteURL string) ([]byte, error) {
+	req, err := http.NewRequest("GET", absoluteURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.apiToken))
+	req.Header.Set("Authorization", "Basic "+auth)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("downloading attachment: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("download failed (HTTP %d)", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// UploadAttachment uploads a file as an attachment to an issue.
+func (c *Client) UploadAttachment(issueKey, filePath string) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("opening file: %w", err)
+	}
+	defer f.Close()
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+	if err != nil {
+		return fmt.Errorf("creating form file: %w", err)
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return fmt.Errorf("copying file data: %w", err)
+	}
+	writer.Close()
+
+	url := c.baseURL + "/rest/api/3/issue/" + issueKey + "/attachments"
+	req, err := http.NewRequest("POST", url, &buf)
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+
+	auth := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.apiToken))
+	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-Atlassian-Token", "no-check")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("uploading attachment: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 func (c *Client) put(path string, jsonBody []byte) error {
@@ -801,4 +868,47 @@ func (c *Client) CreateLink(issueKey, targetKey, linkTypeName, direction string)
 // DeleteLink deletes an issue link by its ID.
 func (c *Client) DeleteLink(linkID string) error {
 	return c.deleteReq("/rest/api/3/issueLink/" + linkID)
+}
+
+// DeleteAttachment removes an attachment by its ID.
+func (c *Client) DeleteAttachment(attachmentID string) error {
+	return c.deleteReq("/rest/api/3/attachment/" + attachmentID)
+}
+
+// GetProjectStatusesAndTypes fetches statuses grouped by issue type from
+// GET /rest/api/3/project/{key}/statuses. Returns deduplicated statuses
+// and issue types.
+func (c *Client) GetProjectStatusesAndTypes(projectKey string) ([]models.Status, []models.IssueType, error) {
+	path := "/rest/api/3/project/" + projectKey + "/statuses"
+	data, err := c.get(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetching project statuses: %w", err)
+	}
+
+	entries, err := decodeJSON[[]jiraProjectStatusEntry](data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding project statuses: %w", err)
+	}
+
+	seenStatus := make(map[string]bool)
+	var statuses []models.Status
+	issueTypes := make([]models.IssueType, 0, len(entries))
+
+	for _, entry := range entries {
+		issueTypes = append(issueTypes, models.IssueType{
+			ID:   entry.ID,
+			Name: entry.Name,
+		})
+		for _, s := range entry.Statuses {
+			if !seenStatus[s.ID] {
+				seenStatus[s.ID] = true
+				statuses = append(statuses, models.Status{
+					ID:   s.ID,
+					Name: s.Name,
+				})
+			}
+		}
+	}
+
+	return statuses, issueTypes, nil
 }
