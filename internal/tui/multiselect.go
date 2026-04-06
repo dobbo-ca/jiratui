@@ -122,15 +122,7 @@ func (ms *MultiSelect) Close() {
 
 func (ms *MultiSelect) SetItems(items []DropdownItem) {
 	ms.items = items
-	valid := make(map[string]bool)
-	for _, item := range items {
-		valid[item.ID] = true
-	}
-	for id := range ms.selected {
-		if !valid[id] {
-			delete(ms.selected, id)
-		}
-	}
+	ms.selected = make(map[string]bool)
 }
 
 func (ms *MultiSelect) SetWidth(w int) {
