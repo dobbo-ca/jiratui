@@ -464,7 +464,7 @@ func fetchIssuesWithJQL(client *jira.Client, jql string) tea.Cmd {
 
 func isFilterBarKey(key string) bool {
 	switch key {
-	case "t", "s", "p", "a", "l", "d", "D", "o", "O", "x", "S":
+	case "t", "s", "p", "a", "l", "d", "D", "o", "O", "x":
 		return true
 	}
 	return false
@@ -697,16 +697,20 @@ func NewApp(client *jira.Client, profileName, initialProject, configPath string,
 	myAccountID, _, _ := client.GetMyself()
 
 	filterBar := NewFilterBar(0) // width set on first WindowSizeMsg
-	if myAccountID != "" {
-		filterBar.SetDefaultAssignee(myAccountID, "")
-	}
 
-	// Restore saved filters for the current project
+	// Restore saved views for the current project; always load Default view on startup
 	if configPath != "" {
 		if cfg, err := config.Load(configPath); err == nil {
-			if profile, ok := cfg.Profiles[profileName]; ok && profile.Filters != nil {
-				if sf, ok := profile.Filters[initialProject]; ok {
-					filterBar.RestoreFilters(sf)
+			if profile, ok := cfg.Profiles[profileName]; ok {
+				if profile.SavedViews != nil {
+					if views, ok := profile.SavedViews[initialProject]; ok {
+						filterBar.SetSavedViews(views, DefaultViewName)
+						logDebug("NewApp: found %d saved views", len(views))
+						if sf, ok := views[DefaultViewName]; ok {
+							logDebug("NewApp: restoring Default view: status=%v assignee=%v priority=%v since=%q sort=%q", sf.StatusIDs, sf.AssigneeIDs, sf.PriorityIDs, sf.Since, sf.SortField)
+							filterBar.RestoreFilters(sf)
+						}
+					}
 				}
 			}
 		}
@@ -766,7 +770,7 @@ func saveProjectToConfig(configPath, profileName, projectKey string) tea.Cmd {
 	}
 }
 
-func saveFiltersToConfig(configPath, profileName, projectKey string, filters config.SavedFilters) tea.Cmd {
+func deleteFilterView(configPath, profileName, projectKey, viewName string) tea.Cmd {
 	return func() tea.Msg {
 		if configPath == "" {
 			return nil
@@ -779,10 +783,42 @@ func saveFiltersToConfig(configPath, profileName, projectKey string, filters con
 		if !ok {
 			return nil
 		}
-		if profile.Filters == nil {
-			profile.Filters = make(map[string]config.SavedFilters)
+		if profile.SavedViews != nil && profile.SavedViews[projectKey] != nil {
+			delete(profile.SavedViews[projectKey], viewName)
 		}
-		profile.Filters[projectKey] = filters
+		if profile.ActiveView != nil && profile.ActiveView[projectKey] == viewName {
+			delete(profile.ActiveView, projectKey)
+		}
+		cfg.Profiles[profileName] = profile
+		_ = config.Save(cfg, configPath)
+		return nil
+	}
+}
+
+func saveFiltersToConfig(configPath, profileName, projectKey, viewName string, filters config.SavedFilters) tea.Cmd {
+	return func() tea.Msg {
+		if configPath == "" {
+			return nil
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return nil
+		}
+		profile, ok := cfg.Profiles[profileName]
+		if !ok {
+			return nil
+		}
+		if profile.SavedViews == nil {
+			profile.SavedViews = make(map[string]map[string]config.SavedFilters)
+		}
+		if profile.SavedViews[projectKey] == nil {
+			profile.SavedViews[projectKey] = make(map[string]config.SavedFilters)
+		}
+		profile.SavedViews[projectKey][viewName] = filters
+		if profile.ActiveView == nil {
+			profile.ActiveView = make(map[string]string)
+		}
+		profile.ActiveView[projectKey] = viewName
 		cfg.Profiles[profileName] = profile
 		_ = config.Save(cfg, configPath)
 		return nil
@@ -797,28 +833,13 @@ func sortProjectsByKey(projects []models.Project) {
 	}
 }
 
-func fetchIssues(client *jira.Client, sort SortState, projectKey string) tea.Cmd {
-	return func() tea.Msg {
-		result, err := client.SearchMyIssues(50, "", sort.orderByClause(), projectKey)
-		if err != nil {
-			return errMsg{err: err}
-		}
-		return issuesMsg{issues: result.Issues}
-	}
-}
-
 // Init starts the spinner and fires the initial data fetch.
 func (a App) Init() tea.Cmd {
-	var issueFetch tea.Cmd
-	if a.filterBar.HasActiveFilters() {
-		jql := a.filterBar.BuildJQL(a.projectKey, a.sort.orderByClause())
-		issueFetch = fetchIssuesWithJQL(a.client, jql)
-	} else {
-		issueFetch = fetchIssues(a.client, a.sort, a.projectKey)
-	}
+	jql := a.filterBar.BuildJQL(a.projectKey, a.filterBar.OrderByClause())
+	logDebug("Init: JQL=%s", jql)
 	return tea.Batch(
 		a.spinner.Tick,
-		issueFetch,
+		fetchIssuesWithJQL(a.client, jql),
 		fetchProjects(a.client),
 		fetchStatusesAndTypes(a.client, a.projectKey),
 	)
@@ -880,9 +901,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.detail = nil
 					a.detailKey = ""
 					a.filterBar.ClearAll()
+					jql := a.filterBar.BuildJQL(a.projectKey, a.filterBar.OrderByClause())
 					return a, tea.Batch(
 						a.spinner.Tick,
-						fetchIssues(a.client, a.sort, a.projectKey),
+						fetchIssuesWithJQL(a.client, jql),
 						saveProjectToConfig(a.configPath, a.profileName, a.projectKey),
 						fetchStatusesAndTypes(a.client, a.projectKey),
 					)
@@ -963,7 +985,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.err = nil
 				a.detail = nil
 				a.detailKey = ""
-				jql := a.filterBar.BuildJQL(a.projectKey, a.sort.orderByClause())
+				jql := a.filterBar.BuildJQL(a.projectKey, a.filterBar.OrderByClause())
 				return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
 			}
 			if a.detail != nil && !a.filterBar.ActiveDropdown() {
@@ -998,14 +1020,38 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case filterChangedMsg:
-		jql := a.filterBar.BuildJQL(a.projectKey, a.sort.orderByClause())
+		a.filterBar.saveFlash = 0 // reset "Saved!" indicator
+		jql := a.filterBar.BuildJQL(a.projectKey, a.filterBar.OrderByClause())
+		logDebug("filterChangedMsg: JQL=%s", jql)
 		a.state = stateLoading
 		a.detail = nil
 		a.detailKey = ""
 		return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
 
+	case filterDeleteViewMsg:
+		delete(a.filterBar.savedViews, msg.name)
+		a.filterBar.rebuildLoadDropItems()
+		a.filterBar.clearFiltersOnly()
+		if sf, ok := a.filterBar.savedViews[DefaultViewName]; ok {
+			a.filterBar.RestoreFilters(sf)
+		}
+		a.filterBar.activeView = DefaultViewName
+		a.filterBar.loadDrop.value = DefaultViewName
+		return a, tea.Batch(
+			func() tea.Msg { return filterChangedMsg{} },
+			deleteFilterView(a.configPath, a.profileName, a.projectKey, msg.name),
+		)
+
 	case filterSaveMsg:
-		return a, saveFiltersToConfig(a.configPath, a.profileName, a.projectKey, a.filterBar.GetSavedFilters())
+		viewName := a.filterBar.activeView
+		if viewName == "" {
+			viewName = DefaultViewName
+		}
+		// Update the in-memory saved views so Load dropdown reflects the save
+		a.filterBar.savedViews[viewName] = a.filterBar.GetSavedFilters()
+		a.filterBar.rebuildLoadDropItems()
+		a.filterBar.loadDrop.value = viewName
+		return a, saveFiltersToConfig(a.configPath, a.profileName, a.projectKey, viewName, a.filterBar.GetSavedFilters())
 
 	case filterSearchTick:
 		var cmd tea.Cmd
@@ -1024,9 +1070,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			typeItems[i] = DropdownItem{ID: it.ID, Label: it.Name}
 		}
 		a.filterBar.SetTypeItems(typeItems)
+		logDebug("statusesAndTypesMsg: loaded %d statuses, %d types", len(msg.statuses), len(msg.issueTypes))
+		logDebug("statusesAndTypesMsg: HasActiveFilters=%v", a.filterBar.HasActiveFilters())
+		// If there are pending saved selections that can now resolve to labels,
+		// re-fetch with the correct JQL
+		if a.filterBar.HasActiveFilters() {
+			jql := a.filterBar.BuildJQL(a.projectKey, a.filterBar.OrderByClause())
+			logDebug("statusesAndTypesMsg: re-fetching with JQL=%s", jql)
+			return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
+		}
 		return a, nil
 
 	case issuesMsg:
+		logDebug("issuesMsg: received %d issues", len(msg.issues))
 		a.list = NewList(msg.issues, a.width, a.height)
 		// Restore sort indicators
 		switch a.sort.Field {
@@ -1044,13 +1100,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				labelSet[l] = true
 			}
 		}
-		if len(labelSet) > 0 {
-			labelItems := make([]DropdownItem, 0, len(labelSet))
-			for l := range labelSet {
-				labelItems = append(labelItems, DropdownItem{ID: l, Label: l})
-			}
-			a.filterBar.SetLabelItems(labelItems)
+		labelItems := make([]DropdownItem, 0, len(labelSet))
+		for l := range labelSet {
+			labelItems = append(labelItems, DropdownItem{ID: l, Label: l})
 		}
+		a.filterBar.SetLabelItems(labelItems)
 		// Auto-fetch first issue detail
 		if len(msg.issues) > 0 {
 			a.detailLoading = true
@@ -1083,10 +1137,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.state = stateLoading
 		a.detail = nil
 		a.detailKey = ""
-		jql := a.filterBar.BuildJQL(a.projectKey, a.sort.orderByClause())
+		jql := a.filterBar.BuildJQL(a.projectKey, a.filterBar.OrderByClause())
 		return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
 
 	case sortChangedMsg:
+		a.filterBar.saveFlash = 0 // reset "Saved!" indicator
 		// Sync sort state from filterBar's sort controls
 		field := a.filterBar.SortField()
 		switch field {
@@ -1408,6 +1463,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 
 	case errMsg:
+		logDebug("errMsg: %v", msg.err)
 		a.err = msg.err
 		a.state = stateList
 		a.detailLoading = false
@@ -1553,9 +1609,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									a.detail = nil
 									a.detailKey = ""
 									a.filterBar.ClearAll()
+									jql := a.filterBar.BuildJQL(a.projectKey, a.filterBar.OrderByClause())
 									return a, tea.Batch(
 										a.spinner.Tick,
-										fetchIssues(a.client, a.sort, a.projectKey),
+										fetchIssuesWithJQL(a.client, jql),
 										saveProjectToConfig(a.configPath, a.profileName, a.projectKey),
 										fetchStatusesAndTypes(a.client, a.projectKey),
 									)
@@ -1575,6 +1632,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// FilterBar mouse handling
 			filterBarH := a.filterBar.Height()
+
+			// If only search is active (no dropdown overlay), close it on any click and fall through
+			if a.filterBar.IsExpanded() && a.filterBar.searchActive && !a.filterBar.sortDrop.IsOpen() &&
+				!a.filterBar.typeDrop.IsOpen() && !a.filterBar.statusDrop.IsOpen() &&
+				!a.filterBar.priorityDrop.IsOpen() && !a.filterBar.assigneeDrop.IsOpen() &&
+				!a.filterBar.labelsDrop.IsOpen() && !a.filterBar.createdFrom.IsOpen() &&
+				!a.filterBar.createdUntil.IsOpen() {
+				if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
+					a.filterBar.searchActive = false
+					a.filterBar.search.Blur()
+					// Fall through to normal click handling
+				}
+			}
 
 			// When filterBar has an active dropdown overlay, intercept all mouse events
 			if a.filterBar.IsExpanded() && a.filterBar.ActiveDropdown() {
@@ -1604,10 +1674,31 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							} else if a.filterBar.createdUntil.IsOpen() {
 								localX := mouseMsg.X - startCol
 								changed = a.filterBar.createdUntil.HandleClick(overlayLine, localX, overlayW)
+							} else if a.filterBar.sinceDrop.IsOpen() {
+								changed = a.filterBar.sinceDrop.HandleClick(overlayLine)
+								if changed && !a.filterBar.sinceDrop.IsOpen() {
+									return a, func() tea.Msg { return filterChangedMsg{} }
+								}
+								return a, nil
 							} else if a.filterBar.sortDrop.IsOpen() {
 								changed = a.filterBar.sortDrop.HandleClick(overlayLine)
 								if changed && !a.filterBar.sortDrop.IsOpen() {
 									return a, func() tea.Msg { return sortChangedMsg{} }
+								}
+								return a, nil
+							} else if a.filterBar.loadDrop.IsOpen() {
+								changed = a.filterBar.loadDrop.HandleClick(overlayLine)
+								if changed && !a.filterBar.loadDrop.IsOpen() {
+									// Selection made — restore the selected view
+									sel := a.filterBar.loadDrop.SelectedItem()
+									if sel != nil {
+										a.filterBar.clearFiltersOnly()
+										if sf, ok := a.filterBar.savedViews[sel.ID]; ok {
+											a.filterBar.RestoreFilters(sf)
+										}
+										a.filterBar.activeView = sel.ID
+										return a, func() tea.Msg { return filterChangedMsg{} }
+									}
 								}
 								return a, nil
 							}
@@ -2002,7 +2093,7 @@ func (a App) renderHelpBar() string {
 	} else if a.filterBar.IsExpanded() && a.filterBar.ActiveDropdown() {
 		help = "↑↓ navigate · enter/space toggle · esc close"
 	} else if a.filterBar.IsExpanded() {
-		help = "t type · s status · p priority · a assignee · l labels · d/D dates · / search · o sort · O dir · S save · x clear · esc"
+		help = "t type · s status · p priority · a assignee · l labels · d/D dates · / search · o sort · O dir · x clear · esc"
 	} else if a.projectDrop.IsOpen() || a.profileDrop.IsOpen() {
 		help = "↑↓ navigate · enter select · esc close"
 	} else if a.detail != nil && a.detail.Editing() {

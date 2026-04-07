@@ -178,12 +178,9 @@ func (dp DatePicker) View() string {
 	lbl := lipgloss.NewStyle().Foreground(colorAccent)
 	bdr := lipgloss.NewStyle().Foreground(colorBorder)
 
-	var labelText string
+	labelText := " " + dp.label + " "
 	if dp.open {
-		labelText = " " + dp.label + " 📅 "
 		bdr = bdr.Foreground(colorAccent)
-	} else {
-		labelText = " " + dp.label + " "
 	}
 
 	dashes := innerW - lipgloss.Width(labelText) - 1
@@ -443,14 +440,29 @@ func (dp DatePicker) RenderOverlay() []string {
 		return nil
 	}
 
+	var lines []string
 	switch dp.mode {
 	case modeYears:
-		return dp.renderYearOverlay()
+		lines = dp.renderYearOverlay()
 	case modeMonths:
-		return dp.renderMonthOverlay()
+		lines = dp.renderMonthOverlay()
 	default:
-		return dp.renderDayOverlay()
+		lines = dp.renderDayOverlay()
 	}
+
+	// If calendar overlay is wider than the field, prepend a connector line
+	overlayW := dp.calWidth()
+	if overlayW > dp.width {
+		fieldInnerW := dp.width - 2
+		overlayInnerW := overlayW - 2
+		extra := overlayInnerW - fieldInnerW
+		connBdr := lipgloss.NewStyle().Foreground(colorAccent)
+		connector := connBdr.Render("│"+strings.Repeat(" ", fieldInnerW)+"┘") +
+			connBdr.Render(strings.Repeat("─", extra-1)+"╮")
+		lines = append([]string{connector}, lines...)
+	}
+
+	return lines
 }
 
 // renderDayOverlay renders the day-grid calendar overlay.

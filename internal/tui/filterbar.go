@@ -14,9 +14,24 @@ import (
 type filterChangedMsg struct{}
 type filterSaveMsg struct{}
 type sortChangedMsg struct{}
+type filterSaveFlashTickMsg struct{}
+type filterDeleteViewMsg struct{ name string }
+
+const DefaultViewName = "Default"
 
 type filterSearchTick struct {
 	seq int
+}
+
+var sinceOptions = []DropdownItem{
+	{ID: "", Label: "Any time"},
+	{ID: "-1d", Label: "Today"},
+	{ID: "-3d", Label: "Last 3 days"},
+	{ID: "-1w", Label: "Last week"},
+	{ID: "-2w", Label: "Last 2 weeks"},
+	{ID: "-4w", Label: "Last month"},
+	{ID: "-12w", Label: "Last 3 months"},
+	{ID: "-52w", Label: "Last year"},
 }
 
 var sortFields = []DropdownItem{
@@ -41,9 +56,20 @@ type FilterBar struct {
 	search       textinput.Model
 	searchSeq    int
 	searchActive bool
+	sinceDrop    Dropdown
 	sortDrop     Dropdown
 	sortAsc      bool
 	width        int
+	saveFlash    int // countdown frames for "Saved!" flash (0 = not flashing)
+
+	// Action row state
+	saveNaming      bool           // true when save name input is active
+	saveInput       textinput.Model
+	loadDrop        Dropdown       // dropdown of saved view names
+	savedViews      map[string]config.SavedFilters // name → filters (for current project)
+	activeView      string         // name of the currently loaded view
+	confirmDelete   bool           // true when showing delete confirmation
+	confirmDelName  string         // name of view to delete
 
 	defaultAssigneeID   string
 	defaultAssigneeName string
@@ -55,31 +81,56 @@ func NewFilterBar(width int) FilterBar {
 	ti.CharLimit = 200
 	ti.Prompt = ""
 
+	si := textinput.New()
+	si.Placeholder = "View name..."
+	si.CharLimit = 20
+	si.Prompt = ""
+
 	fieldW := fieldWidth(width, 5)
+
+	statusDrop := NewMultiSelect("Status", nil, fieldW)
+	statusDrop.overlayWidth = 30
+
+	assigneeDrop := NewMultiSelect("Assignee", nil, fieldW)
+	assigneeDrop.overlayWidth = 40
+
+	labelsDrop := NewMultiSelect("Labels", nil, fieldW)
+	labelsDrop.searchable = true
+	labelsDrop.overlayWidth = 35
+
+	defaultItems := []DropdownItem{{ID: DefaultViewName, Label: DefaultViewName}}
+	loadDrop := NewSimpleDropdown("Load View", defaultItems, DefaultViewName, DefaultViewName, 25)
+	loadDrop.overlayWidth = 40
 
 	return FilterBar{
 		typeDrop:     NewMultiSelect("Issue Type", nil, fieldW),
-		statusDrop:   NewMultiSelect("Status", nil, fieldW),
+		statusDrop:   statusDrop,
 		priorityDrop: NewMultiSelect("Priority", nil, fieldW),
-		assigneeDrop: NewMultiSelect("Assignee", nil, fieldW),
-		labelsDrop:   NewMultiSelect("Labels", nil, fieldW),
+		assigneeDrop: assigneeDrop,
+		labelsDrop:   labelsDrop,
 		createdFrom:  NewDatePicker("Created From", nil, 18),
 		createdUntil: NewDatePicker("Created Until", nil, 18),
-		sortDrop:     NewSimpleDropdown("Sort By", sortFields, "Updated", "updated", 18),
+		sinceDrop:    NewSimpleDropdown("Since", sinceOptions, "Any time", "", 18),
+		sortDrop:     NewSimpleDropdown("Sort By", sortFields, "Created", "created", 18),
+		loadDrop:     loadDrop,
 		search:       ti,
+		saveInput:    si,
+		sortAsc:      false,
+		activeView:   DefaultViewName,
+		savedViews:   make(map[string]config.SavedFilters),
 		width:        width,
 	}
 }
 
 func fieldWidth(totalW, count int) int {
-	w := (totalW - (count - 1)) / count
+	w := totalW / count
 	if w < 16 {
 		w = 16
 	}
 	return w
 }
 
-// fieldCount is the total number of fields in the expanded filter bar.
+// fieldCount is the total number of fields in the expanded filter bar (excluding action row).
 const fieldCount = 11
 
 // Indices into the field list for click/overlay routing.
@@ -92,9 +143,16 @@ const (
 	fieldFrom      = 5
 	fieldUntil     = 6
 	fieldSearch    = 7
-	fieldSortBy    = 8
-	fieldDirection = 9
-	fieldSave      = 10
+	fieldSince     = 8
+	fieldSortBy    = 9
+	fieldDirection = 10
+)
+
+// Action button indices in the action row.
+const (
+	actionSave  = 0
+	actionLoad  = 1
+	actionClear = 2
 )
 
 // minFieldW is the minimum width for a single field.
@@ -157,7 +215,15 @@ func (fb *FilterBar) SetWidth(w int) {
 	fb.labelsDrop.SetWidth(fieldW)
 	fb.createdFrom.width = fieldW
 	fb.createdUntil.width = fieldW
+	fb.sinceDrop.width = fieldW
 	fb.sortDrop.width = fieldW
+}
+
+func (fb FilterBar) sinceValue() string {
+	if sel := fb.sinceDrop.SelectedItem(); sel != nil {
+		return sel.ID
+	}
+	return ""
 }
 
 // Sort accessors
@@ -187,7 +253,20 @@ func (fb FilterBar) SortLabel() string {
 func (fb *FilterBar) SetStatusItems(items []DropdownItem)   { fb.statusDrop.SetItemsKeepSelection(items) }
 func (fb *FilterBar) SetTypeItems(items []DropdownItem)     { fb.typeDrop.SetItemsKeepSelection(items) }
 func (fb *FilterBar) SetPriorityItems(items []DropdownItem) { fb.priorityDrop.SetItemsKeepSelection(items) }
-func (fb *FilterBar) SetAssigneeItems(items []DropdownItem) { fb.assigneeDrop.SetItemsKeepSelection(items) }
+func (fb *FilterBar) SetAssigneeItems(items []DropdownItem) {
+	// Ensure "Unassigned" is always the first option
+	hasUnassigned := false
+	for _, item := range items {
+		if item.ID == "" {
+			hasUnassigned = true
+			break
+		}
+	}
+	if !hasUnassigned {
+		items = append([]DropdownItem{{ID: "unassigned", Label: "Unassigned"}}, items...)
+	}
+	fb.assigneeDrop.SetItemsKeepSelection(items)
+}
 func (fb *FilterBar) SetLabelItems(items []DropdownItem)    { fb.labelsDrop.SetItemsKeepSelection(items) }
 
 func (fb FilterBar) IsExpanded() bool { return fb.expanded }
@@ -203,26 +282,30 @@ func (fb *FilterBar) Toggle() {
 }
 
 func (fb FilterBar) HasActiveFilters() bool {
-	if len(fb.typeDrop.SelectedIDs()) > 0 {
+	// Check raw selected maps (works even before items are loaded)
+	if len(fb.typeDrop.selected) > 0 {
 		return true
 	}
-	if len(fb.statusDrop.SelectedIDs()) > 0 {
+	if len(fb.statusDrop.selected) > 0 {
 		return true
 	}
 	if fb.defaultAssigneeID != "" {
-		ids := fb.assigneeDrop.SelectedIDs()
-		if len(ids) != 1 || ids[0] != fb.defaultAssigneeID {
-			if len(ids) > 0 {
+		// Check if assignee differs from default
+		if len(fb.assigneeDrop.selected) != 1 || !fb.assigneeDrop.selected[fb.defaultAssigneeID] {
+			if len(fb.assigneeDrop.selected) > 0 {
 				return true
 			}
 		}
-	} else if len(fb.assigneeDrop.SelectedIDs()) > 0 {
+	} else if len(fb.assigneeDrop.selected) > 0 {
 		return true
 	}
-	if len(fb.priorityDrop.SelectedIDs()) > 0 {
+	if len(fb.priorityDrop.selected) > 0 {
 		return true
 	}
-	if len(fb.labelsDrop.SelectedIDs()) > 0 {
+	if len(fb.labelsDrop.selected) > 0 {
+		return true
+	}
+	if sel := fb.sinceDrop.SelectedItem(); sel != nil && sel.ID != "" {
 		return true
 	}
 	if fb.createdFrom.Value() != nil {
@@ -241,8 +324,10 @@ func (fb FilterBar) ActiveDropdown() bool {
 	return fb.typeDrop.IsOpen() || fb.statusDrop.IsOpen() ||
 		fb.priorityDrop.IsOpen() || fb.assigneeDrop.IsOpen() ||
 		fb.labelsDrop.IsOpen() || fb.createdFrom.IsOpen() ||
-		fb.createdUntil.IsOpen() || fb.sortDrop.IsOpen() ||
-		fb.searchActive
+		fb.createdUntil.IsOpen() || fb.sinceDrop.IsOpen() ||
+		fb.sortDrop.IsOpen() ||
+		fb.loadDrop.IsOpen() || fb.searchActive || fb.saveNaming ||
+		fb.confirmDelete
 }
 
 func (fb *FilterBar) closeAll() {
@@ -253,22 +338,44 @@ func (fb *FilterBar) closeAll() {
 	fb.labelsDrop.Close()
 	fb.createdFrom.Close()
 	fb.createdUntil.Close()
+	fb.sinceDrop.Close()
 	fb.sortDrop.Close()
+	fb.loadDrop.Close()
 	fb.searchActive = false
 	fb.search.Blur()
+	fb.saveNaming = false
+	fb.saveInput.Blur()
 }
 
-func (fb *FilterBar) ClearAll() tea.Cmd {
+// clearFiltersOnly resets all filter/sort state without emitting messages.
+func (fb *FilterBar) clearFiltersOnly() {
 	fb.typeDrop.Clear()
 	fb.statusDrop.Clear()
 	fb.priorityDrop.Clear()
 	fb.assigneeDrop.Clear()
 	fb.labelsDrop.Clear()
-	fb.createdFrom = NewDatePicker("Created From", nil, 18)
-	fb.createdUntil = NewDatePicker("Created Until", nil, 18)
+	fb.createdFrom = NewDatePicker("Created From", nil, fb.createdFrom.width)
+	fb.createdUntil = NewDatePicker("Created Until", nil, fb.createdUntil.width)
 	fb.search.SetValue("")
 	fb.searchActive = false
 	fb.search.Blur()
+	// Reset since and sort to default
+	fb.sinceDrop.value = "Any time"
+	fb.sinceDrop.selected = 0
+	fb.sortAsc = false
+	for i, item := range sortFields {
+		if item.ID == "created" {
+			fb.sortDrop.value = item.Label
+			fb.sortDrop.selected = i
+			break
+		}
+	}
+	fb.activeView = ""
+	fb.saveFlash = 0
+}
+
+func (fb *FilterBar) ClearAll() tea.Cmd {
+	fb.clearFiltersOnly()
 	return func() tea.Msg { return filterChangedMsg{} }
 }
 
@@ -276,7 +383,7 @@ func (fb FilterBar) Height() int {
 	if !fb.expanded {
 		return strings.Count(fb.renderCollapsed(), "\n") + 1
 	}
-	return 1 + fb.numRows()*3 // header + 3 lines per field row
+	return 1 + fb.numRows()*3 + 1 + 3 // header + 3 lines per field row + divider + 3 line action row
 }
 
 
@@ -294,6 +401,9 @@ func (fb FilterBar) BuildJQL(projectKey, orderBy string) string {
 			clauses = append(clauses, fmt.Sprintf(`issuetype IN (%s)`, quoteJoin(names)))
 		}
 	}
+	// Note: type/status/priority use names in JQL, not IDs.
+	// RawSelectedIDs contains numeric IDs which are invalid in JQL.
+	// These filters apply once items load via SetItemsKeepSelection.
 
 	if names := fb.statusDrop.SelectedLabels(); len(names) > 0 {
 		if len(names) == 1 {
@@ -301,8 +411,6 @@ func (fb FilterBar) BuildJQL(projectKey, orderBy string) string {
 		} else {
 			clauses = append(clauses, fmt.Sprintf(`status IN (%s)`, quoteJoin(names)))
 		}
-	} else {
-		clauses = append(clauses, "statusCategory != Done")
 	}
 
 	if names := fb.priorityDrop.SelectedLabels(); len(names) > 0 {
@@ -314,15 +422,51 @@ func (fb FilterBar) BuildJQL(projectKey, orderBy string) string {
 	}
 
 	if ids := fb.assigneeDrop.SelectedIDs(); len(ids) > 0 {
-		if len(ids) == 1 {
-			clauses = append(clauses, fmt.Sprintf(`assignee = "%s"`, ids[0]))
+		// Separate unassigned from real assignee IDs
+		var realIDs []string
+		hasUnassigned := false
+		for _, id := range ids {
+			if id == "unassigned" {
+				hasUnassigned = true
+			} else {
+				realIDs = append(realIDs, id)
+			}
+		}
+		if hasUnassigned && len(realIDs) == 0 {
+			clauses = append(clauses, "assignee IS EMPTY")
+		} else if hasUnassigned {
+			clauses = append(clauses, fmt.Sprintf(`(assignee IN (%s) OR assignee IS EMPTY)`, quoteJoin(realIDs)))
+		} else if len(realIDs) == 1 {
+			clauses = append(clauses, fmt.Sprintf(`assignee = "%s"`, realIDs[0]))
 		} else {
-			clauses = append(clauses, fmt.Sprintf(`assignee IN (%s)`, quoteJoin(ids)))
+			clauses = append(clauses, fmt.Sprintf(`assignee IN (%s)`, quoteJoin(realIDs)))
+		}
+	} else if ids := fb.assigneeDrop.RawSelectedIDs(); len(ids) > 0 {
+		// Same unassigned handling for raw IDs (items not loaded yet)
+		var realIDs []string
+		hasUnassigned := false
+		for _, id := range ids {
+			if id == "unassigned" {
+				hasUnassigned = true
+			} else {
+				realIDs = append(realIDs, id)
+			}
+		}
+		if hasUnassigned && len(realIDs) == 0 {
+			clauses = append(clauses, "assignee IS EMPTY")
+		} else if hasUnassigned {
+			clauses = append(clauses, fmt.Sprintf(`(assignee IN (%s) OR assignee IS EMPTY)`, quoteJoin(realIDs)))
+		} else if len(realIDs) == 1 {
+			clauses = append(clauses, fmt.Sprintf(`assignee = "%s"`, realIDs[0]))
+		} else {
+			clauses = append(clauses, fmt.Sprintf(`assignee IN (%s)`, quoteJoin(realIDs)))
 		}
 	}
 
 	if names := fb.labelsDrop.SelectedLabels(); len(names) > 0 {
 		clauses = append(clauses, fmt.Sprintf(`labels IN (%s)`, quoteJoin(names)))
+	} else if ids := fb.labelsDrop.RawSelectedIDs(); len(ids) > 0 {
+		clauses = append(clauses, fmt.Sprintf(`labels IN (%s)`, quoteJoin(ids)))
 	}
 
 	if fb.createdFrom.Value() != nil {
@@ -331,6 +475,11 @@ func (fb FilterBar) BuildJQL(projectKey, orderBy string) string {
 
 	if fb.createdUntil.Value() != nil {
 		clauses = append(clauses, fmt.Sprintf(`created <= "%s"`, fb.createdUntil.Value().Format("2006-01-02")))
+	}
+
+	// Since (relative time filter on updated date)
+	if sel := fb.sinceDrop.SelectedItem(); sel != nil && sel.ID != "" {
+		clauses = append(clauses, fmt.Sprintf(`updated >= "%s"`, sel.ID))
 	}
 
 	if fb.search.Value() != "" {
@@ -368,6 +517,13 @@ func isToggleKey(msg tea.Msg) bool {
 func (fb FilterBar) Update(msg tea.Msg) (FilterBar, tea.Cmd) {
 	if !fb.expanded {
 		return fb, nil
+	}
+
+	// Reset save flash on any user interaction (except the flash tick itself)
+	if _, isFlashTick := msg.(filterSaveFlashTickMsg); !isFlashTick {
+		if _, isKey := msg.(tea.KeyMsg); isKey {
+			fb.saveFlash = 0
+		}
 	}
 
 	if fb.typeDrop.IsOpen() {
@@ -431,6 +587,18 @@ func (fb FilterBar) Update(msg tea.Msg) (FilterBar, tea.Cmd) {
 		}
 		return fb, cmd
 	}
+	if fb.sinceDrop.IsOpen() {
+		prevValue := fb.sinceDrop.Value()
+		var cmd tea.Cmd
+		fb.sinceDrop, cmd = fb.sinceDrop.Update(msg)
+		if !fb.sinceDrop.IsOpen() && fb.sinceDrop.Value() != prevValue {
+			return fb, func() tea.Msg { return filterChangedMsg{} }
+		}
+		if !fb.sinceDrop.IsOpen() {
+			return fb, nil
+		}
+		return fb, cmd
+	}
 	if fb.sortDrop.IsOpen() {
 		prevValue := fb.sortDrop.Value()
 		var cmd tea.Cmd
@@ -439,6 +607,97 @@ func (fb FilterBar) Update(msg tea.Msg) (FilterBar, tea.Cmd) {
 			return fb, func() tea.Msg { return sortChangedMsg{} }
 		}
 		if !fb.sortDrop.IsOpen() {
+			return fb, nil
+		}
+		return fb, cmd
+	}
+
+	// Delete confirmation
+	if fb.confirmDelete {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "y":
+				name := fb.confirmDelName
+				fb.confirmDelete = false
+				fb.confirmDelName = ""
+				delete(fb.savedViews, name)
+				if fb.activeView == name {
+					fb.activeView = ""
+				}
+				// Update load dropdown
+				items := make([]DropdownItem, 0, len(fb.savedViews))
+				for n := range fb.savedViews {
+					items = append(items, DropdownItem{ID: n, Label: n})
+				}
+				fb.loadDrop.SetItems(items)
+				return fb, func() tea.Msg { return filterDeleteViewMsg{name: name} }
+			case "n", "esc":
+				fb.confirmDelete = false
+				fb.confirmDelName = ""
+				return fb, nil
+			}
+		}
+		return fb, nil
+	}
+
+	// Save name input
+	if fb.saveNaming {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "esc":
+				fb.saveNaming = false
+				fb.saveInput.Blur()
+				return fb, nil
+			case "enter":
+				name := strings.TrimSpace(fb.saveInput.Value())
+				if name == "" {
+					name = "Default"
+				}
+				fb.saveNaming = false
+				fb.saveInput.Blur()
+				fb.activeView = name
+				fb.saveFlash = 1
+				saveCmd := func() tea.Msg { return filterSaveMsg{} }
+				flashCmd := tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+					return filterSaveFlashTickMsg{}
+				})
+				return fb, tea.Batch(saveCmd, flashCmd)
+			default:
+				var cmd tea.Cmd
+				fb.saveInput, cmd = fb.saveInput.Update(msg)
+				return fb, cmd
+			}
+		case tea.MouseMsg:
+			// Any click closes the naming input
+			if msg.Action == tea.MouseActionPress {
+				fb.saveNaming = false
+				fb.saveInput.Blur()
+			}
+			return fb, nil
+		default:
+			var cmd tea.Cmd
+			fb.saveInput, cmd = fb.saveInput.Update(msg)
+			return fb, cmd
+		}
+	}
+
+	// Load dropdown
+	if fb.loadDrop.IsOpen() {
+		wasOpen := true
+		var cmd tea.Cmd
+		fb.loadDrop, cmd = fb.loadDrop.Update(msg)
+		if wasOpen && !fb.loadDrop.IsOpen() {
+			sel := fb.loadDrop.SelectedItem()
+			if sel != nil {
+				fb.clearFiltersOnly()
+				if sf, ok := fb.savedViews[sel.ID]; ok {
+					fb.RestoreFilters(sf)
+				}
+				fb.activeView = sel.ID
+				return fb, func() tea.Msg { return filterChangedMsg{} }
+			}
 			return fb, nil
 		}
 		return fb, cmd
@@ -520,14 +779,16 @@ func (fb FilterBar) Update(msg tea.Msg) (FilterBar, tea.Cmd) {
 		case "O":
 			fb.ToggleSortDirection()
 			return fb, func() tea.Msg { return sortChangedMsg{} }
-		case "S":
-			return fb, func() tea.Msg { return filterSaveMsg{} }
 		case "x":
 			return fb, fb.ClearAll()
 		case "esc":
 			fb.Collapse()
 			return fb, nil
 		}
+
+	case filterSaveFlashTickMsg:
+		fb.saveFlash = 0
+		return fb, nil
 
 	case filterSearchTick:
 		if msg.seq == fb.searchSeq {
@@ -545,11 +806,18 @@ func (fb *FilterBar) HandleFieldClick(x, y int) tea.Cmd {
 	if !fb.expanded {
 		return nil
 	}
+	fb.saveFlash = 0
 
 	// y=0 is the header line — click toggles collapse
 	if y == 0 {
 		fb.Collapse()
 		return nil
+	}
+
+	// Check if click is on the action row (after divider, last 3 lines)
+	actionRowY := 1 + fb.numRows()*3 + 1 // after header + fields + divider
+	if y >= actionRowY {
+		return fb.HandleActionClick(x)
 	}
 
 	// Determine which row was clicked (each row is 3 lines tall)
@@ -589,13 +857,13 @@ func (fb *FilterBar) activateField(idx int) tea.Cmd {
 		fb.searchActive = true
 		fb.search.Focus()
 		return fb.search.Cursor.BlinkCmd()
+	case fieldSince:
+		return fb.sinceDrop.OpenDropdown()
 	case fieldSortBy:
 		return fb.sortDrop.OpenDropdown()
 	case fieldDirection:
 		fb.ToggleSortDirection()
 		return func() tea.Msg { return sortChangedMsg{} }
-	case fieldSave:
-		return func() tea.Msg { return filterSaveMsg{} }
 	}
 	return nil
 }
@@ -642,6 +910,10 @@ func (fb FilterBar) renderCollapsed() string {
 	}
 	if fb.search.Value() != "" {
 		parts = append(parts, "Search="+fb.search.Value())
+	}
+
+	if sel := fb.sinceDrop.SelectedItem(); sel != nil && sel.ID != "" {
+		parts = append(parts, "Since="+sel.Label)
 	}
 
 	// Build sort info
@@ -708,7 +980,7 @@ func (fb FilterBar) renderExpanded() string {
 	fb.createdUntil.width = fieldW
 	fb.sortDrop.width = fieldW
 
-	// Render all fields in order
+	// Render all fields in order (no save button — it's in the action row)
 	allFields := []string{
 		fb.typeDrop.View(),
 		fb.statusDrop.View(),
@@ -718,9 +990,9 @@ func (fb FilterBar) renderExpanded() string {
 		fb.createdFrom.View(),
 		fb.createdUntil.View(),
 		fb.renderSearchField(fieldW),
+		fb.sinceDrop.View(),
 		fb.sortDrop.View(),
 		fb.renderDirToggle(fieldW),
-		fb.renderSaveButton(fieldW),
 	}
 
 	// Split into rows of fpr fields each
@@ -732,6 +1004,13 @@ func (fb FilterBar) renderExpanded() string {
 		b.WriteString("\n")
 		b.WriteString(joinFieldsHorizontal(allFields[i:end]...))
 	}
+
+	// Action row + Divider
+	b.WriteString("\n")
+	b.WriteString(fb.renderActionRow())
+	divStyle := lipgloss.NewStyle().Foreground(colorBorder)
+	b.WriteString("\n")
+	b.WriteString(divStyle.Render(strings.Repeat("─", fb.width)))
 
 	return b.String()
 }
@@ -767,30 +1046,193 @@ func (fb FilterBar) renderDirToggle(width int) string {
 	return top + "\n" + mid + "\n" + bot
 }
 
-func (fb FilterBar) renderSaveButton(width int) string {
+// SetSavedViews updates the available saved view names for the load dropdown.
+// The Default view always appears first.
+func (fb *FilterBar) SetSavedViews(views map[string]config.SavedFilters, activeView string) {
+	fb.savedViews = views
+	fb.activeView = activeView
+	fb.rebuildLoadDropItems()
+}
+
+// rebuildLoadDropItems rebuilds the load dropdown items, ensuring Default is always first.
+func (fb *FilterBar) rebuildLoadDropItems() {
+	items := []DropdownItem{{ID: DefaultViewName, Label: DefaultViewName}}
+	for name := range fb.savedViews {
+		if name != DefaultViewName {
+			items = append(items, DropdownItem{ID: name, Label: name})
+		}
+	}
+	fb.loadDrop.SetItems(items)
+}
+
+// actionButtonWidth returns the width for action buttons.
+// When the Add input is active, returns a wider width for the text field.
+func (fb FilterBar) actionButtonWidth() int {
+	if fb.saveNaming {
+		return 25
+	}
+	return 6 // border(1) + pad(1) + content(2) + pad(1) + border(1)
+}
+
+// actionLoadWidth returns the static width for the Load dropdown.
+func (fb FilterBar) actionLoadWidth() int {
+	return 40
+}
+
+func (fb FilterBar) renderActionRow() string {
+	// Delete confirmation takes over the row
+	if fb.confirmDelete {
+		warnStyle := lipgloss.NewStyle().Foreground(colorError).Bold(true)
+		hintStyle := lipgloss.NewStyle().Foreground(colorSubtle)
+		return " " + warnStyle.Render("Delete \""+fb.confirmDelName+"\"? ") +
+			hintStyle.Render("(y)es / (n)o")
+	}
+
+	loadW := fb.actionLoadWidth()
+
+	// Load dropdown / new view name input
+	fb.loadDrop.width = loadW
+	var loadField string
+	if fb.saveNaming {
+		fb.saveInput.Width = loadW - 6 // account for borders + label padding
+		loadField = fb.renderActionField("View Name", fb.saveInput.View(), loadW, colorAccent)
+	} else {
+		loadField = fb.loadDrop.View()
+	}
+
+	saveBg := lipgloss.Color("#1a2e1a") // dark green for flash fill
+
+	// Save button (saves current view without prompting)
+	var saveField string
+	if fb.saveFlash > 0 {
+		saveField = fb.renderActionButton("✓", colorSuccess, colorSuccess, true, saveBg)
+	} else {
+		saveField = fb.renderActionButton("💾", colorText, colorSuccess, false, saveBg)
+	}
+
+	// Add button
+	addField := fb.renderActionButton("＋", colorText, colorAccent, false, colorBackground)
+
+	// Delete button (disabled for Default view, moved to far right)
+	var deleteField string
+	if fb.activeView != "" && fb.activeView != DefaultViewName {
+		deleteField = fb.renderActionButton("🗑", colorText, colorError, false, colorBackground)
+	} else {
+		deleteField = fb.renderActionButton("🗑", colorSubtle, colorSubtle, false, colorBackground)
+	}
+
+	return joinFieldsHorizontal(loadField, addField, saveField, deleteField)
+}
+
+// renderActionButton renders a bordered icon button.
+// If filled is true, the interior gets the bg color.
+func (fb FilterBar) renderActionButton(icon string, fg, borderColor lipgloss.Color, filled bool, bg lipgloss.Color) string {
+	innerW := 4
+	valW := innerW - 2
+
+	bdr := lipgloss.NewStyle().Foreground(borderColor)
+
+	top := bdr.Render("╭" + strings.Repeat("─", innerW) + "╮")
+
+	rendered := lipgloss.NewStyle().Foreground(fg).Render(icon)
+	iconW := lipgloss.Width(rendered)
+	padLeft := (valW - iconW) / 2
+	padRight := valW - iconW - padLeft
+	if padRight < 0 {
+		padRight = 0
+	}
+
+	var mid string
+	if filled {
+		bgStyle := lipgloss.NewStyle().Background(bg)
+		renderedBg := lipgloss.NewStyle().Foreground(fg).Background(bg).Render(icon)
+		mid = bdr.Render("│") +
+			bgStyle.Render(" "+strings.Repeat(" ", padLeft)) +
+			renderedBg +
+			bgStyle.Render(strings.Repeat(" ", padRight)+" ") +
+			bdr.Render("│")
+	} else {
+		mid = bdr.Render("│") + " " + strings.Repeat(" ", padLeft) + rendered + strings.Repeat(" ", padRight) + " " + bdr.Render("│")
+	}
+
+	bot := bdr.Render("╰" + strings.Repeat("─", innerW) + "╯")
+	return top + "\n" + mid + "\n" + bot
+}
+
+// renderActionField renders a bordered button-like field (used for save input).
+func (fb FilterBar) renderActionField(label, content string, width int, labelColor lipgloss.Color) string {
 	innerW := width - 2
 	valW := innerW - 2
 
-	lbl := lipgloss.NewStyle().Foreground(colorSuccess)
+	lbl := lipgloss.NewStyle().Foreground(labelColor)
 	bdr := lipgloss.NewStyle().Foreground(colorBorder)
 
-	labelText := " Save "
-	dashes := innerW - lipgloss.Width(labelText) - 1
-	if dashes < 0 {
-		dashes = 0
+	top := bdr.Render("╭" + strings.Repeat("─", innerW) + "╮")
+
+	var mid string
+	if content != "" {
+		visW := lipgloss.Width(content)
+		pad := valW - visW
+		if pad < 0 {
+			pad = 0
+		}
+		mid = bdr.Render("│") + " " + content + strings.Repeat(" ", pad) + " " + bdr.Render("│")
+	} else {
+		rendered := lbl.Render(label)
+		labelW := lipgloss.Width(rendered)
+		padLeft := (valW - labelW) / 2
+		if padLeft < 0 {
+			padLeft = 0
+		}
+		padRight := valW - labelW - padLeft
+		if padRight < 0 {
+			padRight = 0
+		}
+		mid = bdr.Render("│") + " " + strings.Repeat(" ", padLeft) + rendered + strings.Repeat(" ", padRight) + " " + bdr.Render("│")
 	}
 
-	top := bdr.Render("╭─") + lbl.Render(labelText) + bdr.Render(strings.Repeat("─", dashes)+"╮")
-
-	icon := lipgloss.NewStyle().Foreground(colorSuccess).Render("S")
-	pad := valW - lipgloss.Width(icon)
-	if pad < 0 {
-		pad = 0
-	}
-	mid := bdr.Render("│") + " " + icon + strings.Repeat(" ", pad) + " " + bdr.Render("│")
 	bot := bdr.Render("╰" + strings.Repeat("─", innerW) + "╯")
-
 	return top + "\n" + mid + "\n" + bot
+}
+
+// HandleActionClick handles a click on the action row.
+// x is the click X position, returns a tea.Cmd.
+func (fb *FilterBar) HandleActionClick(x int) tea.Cmd {
+	loadW := fb.actionLoadWidth()
+	btnW := fb.actionButtonWidth()
+
+	if x < loadW {
+		// Load (always has at least the Default entry)
+		fb.closeAll()
+		return fb.loadDrop.OpenDropdown()
+	}
+	idx := (x - loadW) / btnW
+	switch idx {
+	case 0: // Add (prompt for new view name)
+		fb.closeAll()
+		fb.saveNaming = true
+		fb.saveInput.SetValue("")
+		fb.saveInput.Focus()
+		return fb.saveInput.Cursor.BlinkCmd()
+	case 1: // Save (immediate save to current view)
+		if fb.activeView != "" {
+			fb.closeAll()
+			fb.saveFlash = 1
+			saveCmd := func() tea.Msg { return filterSaveMsg{} }
+			flashCmd := tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+				return filterSaveFlashTickMsg{}
+			})
+			return tea.Batch(saveCmd, flashCmd)
+		}
+		return nil
+	case 2: // Delete
+		if fb.activeView != "" && fb.activeView != DefaultViewName {
+			fb.confirmDelete = true
+			fb.confirmDelName = fb.activeView
+		}
+		return nil
+	}
+	return nil
 }
 
 func (fb FilterBar) renderSearchField(width int) string {
@@ -842,46 +1284,66 @@ func (fb FilterBar) OverlayLines() (lines []string, startLine, startCol int) {
 	fpr := fb.fieldsPerRow()
 	fieldW := fb.fieldRowWidth(fpr)
 
-	// Helper: given a field index, return the startLine and startCol
-	pos := func(idx int) (int, int) {
+	// Helper: given a field index and its MultiSelect, return the startLine and startCol.
+	// If the overlay has a connector (wider than field), start 1 line earlier to overlap ├──┤.
+	pos := func(idx int, ms *MultiSelect) (int, int) {
 		row, col := fb.fieldPosition(idx)
-		// startLine = header(1) + row * 3 lines + 3 (below the field box)
 		sl := 1 + (row+1)*3
+		if ms != nil && ms.overlayWidth > 0 && ms.overlayWidth > ms.width {
+			sl-- // connector line overlaps the field's bottom border
+		}
 		sc := col * fieldW
 		return sl, sc
 	}
 
 	if fb.typeDrop.IsOpen() {
-		sl, sc := pos(fieldType)
+		sl, sc := pos(fieldType, &fb.typeDrop)
 		return fb.typeDrop.RenderOverlay(), sl, sc
 	}
 	if fb.statusDrop.IsOpen() {
-		sl, sc := pos(fieldStatus)
+		sl, sc := pos(fieldStatus, &fb.statusDrop)
 		return fb.statusDrop.RenderOverlay(), sl, sc
 	}
 	if fb.priorityDrop.IsOpen() {
-		sl, sc := pos(fieldPriority)
+		sl, sc := pos(fieldPriority, &fb.priorityDrop)
 		return fb.priorityDrop.RenderOverlay(), sl, sc
 	}
 	if fb.assigneeDrop.IsOpen() {
-		sl, sc := pos(fieldAssignee)
+		sl, sc := pos(fieldAssignee, &fb.assigneeDrop)
 		return fb.assigneeDrop.RenderOverlay(), sl, sc
 	}
 	if fb.labelsDrop.IsOpen() {
-		sl, sc := pos(fieldLabels)
+		sl, sc := pos(fieldLabels, &fb.labelsDrop)
 		return fb.labelsDrop.RenderOverlay(), sl, sc
 	}
 	if fb.createdFrom.IsOpen() {
-		sl, sc := pos(fieldFrom)
-		return fb.createdFrom.RenderOverlay(), sl, sc
+		row, col := fb.fieldPosition(fieldFrom)
+		sl := 1 + (row+1)*3
+		if fb.createdFrom.calWidth() > fb.createdFrom.width {
+			sl--
+		}
+		return fb.createdFrom.RenderOverlay(), sl, col * fieldW
 	}
 	if fb.createdUntil.IsOpen() {
-		sl, sc := pos(fieldUntil)
-		return fb.createdUntil.RenderOverlay(), sl, sc
+		row, col := fb.fieldPosition(fieldUntil)
+		sl := 1 + (row+1)*3
+		if fb.createdUntil.calWidth() > fb.createdUntil.width {
+			sl--
+		}
+		return fb.createdUntil.RenderOverlay(), sl, col * fieldW
+	}
+	if fb.sinceDrop.IsOpen() {
+		sl, sc := pos(fieldSince, nil)
+		return fb.sinceDrop.RenderOverlay(), sl, sc
 	}
 	if fb.sortDrop.IsOpen() {
-		sl, sc := pos(fieldSortBy)
+		sl, sc := pos(fieldSortBy, nil)
 		return fb.sortDrop.RenderOverlay(), sl, sc
+	}
+	// Load dropdown overlay appears directly below the Load field, overlapping the divider
+	if fb.loadDrop.IsOpen() {
+		actionRowY := 1 + fb.numRows()*3 + 1
+		return fb.loadDrop.RenderOverlay(), actionRowY + 2, 0
 	}
 
 	return nil, 0, 0
@@ -889,13 +1351,37 @@ func (fb FilterBar) OverlayLines() (lines []string, startLine, startCol int) {
 
 // GetSavedFilters returns the current filter state for persistence.
 func (fb FilterBar) GetSavedFilters() config.SavedFilters {
+	// Use SelectedIDs when items are loaded, fall back to RawSelectedIDs
+	typeIDs := fb.typeDrop.SelectedIDs()
+	if len(typeIDs) == 0 {
+		typeIDs = fb.typeDrop.RawSelectedIDs()
+	}
+	statusIDs := fb.statusDrop.SelectedIDs()
+	if len(statusIDs) == 0 {
+		statusIDs = fb.statusDrop.RawSelectedIDs()
+	}
+	priorityIDs := fb.priorityDrop.SelectedIDs()
+	if len(priorityIDs) == 0 {
+		priorityIDs = fb.priorityDrop.RawSelectedIDs()
+	}
+	assigneeIDs := fb.assigneeDrop.SelectedIDs()
+	if len(assigneeIDs) == 0 {
+		assigneeIDs = fb.assigneeDrop.RawSelectedIDs()
+	}
+	labelIDs := fb.labelsDrop.SelectedIDs()
+	if len(labelIDs) == 0 {
+		labelIDs = fb.labelsDrop.RawSelectedIDs()
+	}
 	sf := config.SavedFilters{
-		TypeIDs:     fb.typeDrop.SelectedIDs(),
-		StatusIDs:   fb.statusDrop.SelectedIDs(),
-		PriorityIDs: fb.priorityDrop.SelectedIDs(),
-		AssigneeIDs: fb.assigneeDrop.SelectedIDs(),
-		LabelIDs:    fb.labelsDrop.SelectedIDs(),
+		TypeIDs:     typeIDs,
+		StatusIDs:   statusIDs,
+		PriorityIDs: priorityIDs,
+		AssigneeIDs: assigneeIDs,
+		LabelIDs:    labelIDs,
 		SearchText:  fb.search.Value(),
+		Since:       fb.sinceValue(),
+		SortField:   fb.SortField(),
+		SortAsc:     fb.sortAsc,
 	}
 	if fb.createdFrom.Value() != nil {
 		sf.CreatedFrom = fb.createdFrom.Value().Format("2006-01-02")
@@ -909,18 +1395,26 @@ func (fb FilterBar) GetSavedFilters() config.SavedFilters {
 // RestoreFilters applies a saved filter state to the dropdowns.
 // Items must already be populated for ID-based selections to take effect.
 func (fb *FilterBar) RestoreFilters(sf config.SavedFilters) {
+	// Clear and restore each field. We clear first so that defaults
+	// (like "me" as assignee) don't persist when the saved view
+	// doesn't include them.
+	fb.typeDrop.selected = make(map[string]bool)
 	for _, id := range sf.TypeIDs {
 		fb.typeDrop.selected[id] = true
 	}
+	fb.statusDrop.selected = make(map[string]bool)
 	for _, id := range sf.StatusIDs {
 		fb.statusDrop.selected[id] = true
 	}
+	fb.priorityDrop.selected = make(map[string]bool)
 	for _, id := range sf.PriorityIDs {
 		fb.priorityDrop.selected[id] = true
 	}
+	fb.assigneeDrop.selected = make(map[string]bool)
 	for _, id := range sf.AssigneeIDs {
 		fb.assigneeDrop.selected[id] = true
 	}
+	fb.labelsDrop.selected = make(map[string]bool)
 	for _, id := range sf.LabelIDs {
 		fb.labelsDrop.selected[id] = true
 	}
@@ -936,5 +1430,24 @@ func (fb *FilterBar) RestoreFilters(sf config.SavedFilters) {
 	}
 	if sf.SearchText != "" {
 		fb.search.SetValue(sf.SearchText)
+	}
+	if sf.Since != "" {
+		for i, item := range sinceOptions {
+			if item.ID == sf.Since {
+				fb.sinceDrop.value = item.Label
+				fb.sinceDrop.selected = i
+				break
+			}
+		}
+	}
+	if sf.SortField != "" {
+		fb.sortAsc = sf.SortAsc
+		for i, item := range sortFields {
+			if item.ID == sf.SortField {
+				fb.sortDrop.value = item.Label
+				fb.sortDrop.selected = i
+				break
+			}
+		}
 	}
 }

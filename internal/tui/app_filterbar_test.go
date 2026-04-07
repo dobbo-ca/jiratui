@@ -127,9 +127,9 @@ func TestFilterBarDynamicRows(t *testing.T) {
 		t.Errorf("narrow height (%d) should be taller than wide (%d)", narrowHeight, wideHeight)
 	}
 
-	// Height should be 1 + numRows * 3
-	if wideHeight != 1+wideRows*3 {
-		t.Errorf("wide height should be %d, got %d", 1+wideRows*3, wideHeight)
+	// Height should be 1 + numRows * 3 + 1 (divider) + 3 (action row)
+	if wideHeight != 1+wideRows*3+4 {
+		t.Errorf("wide height should be %d, got %d", 1+wideRows*3+4, wideHeight)
 	}
 }
 

@@ -317,7 +317,7 @@ func (d Dropdown) renderClosed() string {
 	lbl := lipgloss.NewStyle().Foreground(colorAccent)
 	bdr := lipgloss.NewStyle().Foreground(colorBorder)
 
-	labelText := " " + d.label + " ▾ "
+	labelText := " " + d.label + " "
 	if d.open {
 		bdr = bdr.Foreground(colorAccent)
 	}

@@ -7,20 +7,20 @@ import (
 
 func TestFilterBarBuildJQL_Defaults(t *testing.T) {
 	fb := NewFilterBar(120)
-	fb.SetDefaultAssignee("abc123", "Chris")
 
-	jql := fb.BuildJQL("PROJ", "updated DESC")
-	if !strings.Contains(jql, `assignee = "abc123"`) {
-		t.Errorf("expected default assignee clause, got: %s", jql)
-	}
-	if !strings.Contains(jql, "statusCategory != Done") {
-		t.Errorf("expected statusCategory != Done when no status filter, got: %s", jql)
-	}
+	jql := fb.BuildJQL("PROJ", "created DESC")
 	if !strings.Contains(jql, `project = "PROJ"`) {
 		t.Errorf("expected project clause, got: %s", jql)
 	}
-	if !strings.Contains(jql, "ORDER BY updated DESC") {
-		t.Errorf("expected ORDER BY, got: %s", jql)
+	if !strings.Contains(jql, "ORDER BY created DESC") {
+		t.Errorf("expected ORDER BY created DESC, got: %s", jql)
+	}
+	// No default assignee or status filter
+	if strings.Contains(jql, "assignee") {
+		t.Errorf("expected no assignee clause by default, got: %s", jql)
+	}
+	if strings.Contains(jql, "statusCategory") {
+		t.Errorf("expected no statusCategory clause by default, got: %s", jql)
 	}
 }
 

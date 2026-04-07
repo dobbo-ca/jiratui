@@ -18,14 +18,19 @@ type SavedFilters struct {
 	CreatedFrom  string   `yaml:"created_from,omitempty"`
 	CreatedUntil string   `yaml:"created_until,omitempty"`
 	SearchText   string   `yaml:"search_text,omitempty"`
+	Since        string   `yaml:"since,omitempty"`
+	SortField    string   `yaml:"sort_field,omitempty"`
+	SortAsc      bool     `yaml:"sort_asc,omitempty"`
 }
 
 type Profile struct {
-	URL      string `yaml:"url"`
-	Email    string `yaml:"email"`
-	APIToken string `yaml:"api_token"`
-	Project  string `yaml:"project,omitempty"`  // last-used project key
-	Filters  map[string]SavedFilters `yaml:"filters,omitempty"` // per-project saved filters (key = project key, "" = all)
+	URL         string `yaml:"url"`
+	Email       string `yaml:"email"`
+	APIToken    string `yaml:"api_token"`
+	Project     string `yaml:"project,omitempty"`     // last-used project key
+	Filters     map[string]SavedFilters `yaml:"filters,omitempty"`     // per-project saved filters (legacy, key = project key)
+	SavedViews  map[string]map[string]SavedFilters `yaml:"saved_views,omitempty"` // project → name → filters
+	ActiveView  map[string]string `yaml:"active_view,omitempty"`  // project → active view name
 }
 
 type Config struct {
