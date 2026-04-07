@@ -225,13 +225,19 @@ func decodeJSON[T any](data []byte) (T, error) {
 
 // adfToMarkdown converts Atlassian Document Format to markdown.
 func adfToMarkdown(adf *jiraADF) string {
+	return adfToMarkdownWithMedia(adf, nil)
+}
+
+// adfToMarkdownWithMedia converts ADF to markdown, resolving media node IDs
+// to filenames using the provided attachment map (id → filename).
+func adfToMarkdownWithMedia(adf *jiraADF, attachments map[string]string) string {
 	if adf == nil {
 		return ""
 	}
 
 	var blocks []string
 	for _, node := range adf.Content {
-		block := renderBlock(node, "")
+		block := renderBlock(node, "", attachments)
 		if block != "" {
 			blocks = append(blocks, block)
 		}
@@ -240,10 +246,10 @@ func adfToMarkdown(adf *jiraADF) string {
 }
 
 // renderBlock converts a top-level ADF block node to markdown.
-func renderBlock(node jiraNode, prefix string) string {
+func renderBlock(node jiraNode, prefix string, attachments map[string]string) string {
 	switch node.Type {
 	case "paragraph":
-		return prefix + renderInline(node.Content)
+		return prefix + renderInline(node.Content, attachments)
 
 	case "heading":
 		level := 1
@@ -253,23 +259,21 @@ func renderBlock(node jiraNode, prefix string) string {
 			}
 		}
 		hashes := strings.Repeat("#", level)
-		return hashes + " " + renderInline(node.Content)
+		return hashes + " " + renderInline(node.Content, attachments)
 
 	case "bulletList":
-		return renderList(node.Content, "- ", prefix)
+		return renderList(node.Content, "- ", prefix, attachments)
 
 	case "orderedList":
-		return renderList(node.Content, "1. ", prefix)
+		return renderList(node.Content, "1. ", prefix, attachments)
 
 	case "listItem":
-		// listItem children are block nodes (paragraphs, nested lists)
 		var parts []string
 		for i, child := range node.Content {
 			if i == 0 {
-				parts = append(parts, renderBlock(child, prefix))
+				parts = append(parts, renderBlock(child, prefix, attachments))
 			} else {
-				// Subsequent blocks in a list item get indented continuation
-				parts = append(parts, renderBlock(child, prefix+"  "))
+				parts = append(parts, renderBlock(child, prefix+"  ", attachments))
 			}
 		}
 		return strings.Join(parts, "\n")
@@ -281,12 +285,12 @@ func renderBlock(node jiraNode, prefix string) string {
 				lang = ls
 			}
 		}
-		return "```" + lang + "\n" + renderInline(node.Content) + "\n```"
+		return "```" + lang + "\n" + renderInline(node.Content, attachments) + "\n```"
 
 	case "blockquote":
 		var lines []string
 		for _, child := range node.Content {
-			lines = append(lines, "> "+renderBlock(child, ""))
+			lines = append(lines, "> "+renderBlock(child, "", attachments))
 		}
 		return strings.Join(lines, "\n")
 
@@ -299,33 +303,41 @@ func renderBlock(node jiraNode, prefix string) string {
 	case "table":
 		return renderTable(node)
 
+	case "mediaSingle", "mediaGroup":
+		// Container for media nodes — render each child
+		var parts []string
+		for _, child := range node.Content {
+			part := renderMediaNode(child, attachments)
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+		return prefix + strings.Join(parts, " ")
+
 	default:
 		// Fallback: extract inline text
-		return prefix + renderInline(node.Content)
+		return prefix + renderInline(node.Content, attachments)
 	}
 }
 
 // renderList converts list items with the given bullet prefix.
-func renderList(items []jiraNode, bullet, outerPrefix string) string {
+func renderList(items []jiraNode, bullet, outerPrefix string, attachments map[string]string) string {
 	var lines []string
 	for _, item := range items {
 		if item.Type != "listItem" {
 			continue
 		}
-		// Render the first paragraph inline with the bullet
 		var parts []string
 		for i, child := range item.Content {
 			if i == 0 {
 				if child.Type == "paragraph" {
-					parts = append(parts, outerPrefix+bullet+renderInline(child.Content))
+					parts = append(parts, outerPrefix+bullet+renderInline(child.Content, attachments))
 				} else {
-					// Nested list as first child
-					parts = append(parts, renderBlock(child, outerPrefix+"  "))
+					parts = append(parts, renderBlock(child, outerPrefix+"  ", attachments))
 				}
 			} else {
-				// Subsequent blocks: nested lists or continuation paragraphs
 				indent := outerPrefix + strings.Repeat(" ", len(bullet))
-				parts = append(parts, renderBlock(child, indent))
+				parts = append(parts, renderBlock(child, indent, attachments))
 			}
 		}
 		lines = append(lines, strings.Join(parts, "\n"))
@@ -333,8 +345,27 @@ func renderList(items []jiraNode, bullet, outerPrefix string) string {
 	return strings.Join(lines, "\n")
 }
 
+// renderMediaNode converts a media ADF node to a markdown placeholder.
+func renderMediaNode(node jiraNode, attachments map[string]string) string {
+	if node.Type != "media" {
+		return ""
+	}
+	// Try to resolve filename from attachment ID
+	if id, ok := node.Attrs["id"]; ok {
+		idStr := fmt.Sprint(id)
+		if name, found := attachments[idStr]; found {
+			return "[" + name + "]"
+		}
+	}
+	// Fallback: use alt text or generic label
+	if alt, ok := node.Attrs["alt"]; ok && fmt.Sprint(alt) != "" {
+		return "[" + fmt.Sprint(alt) + "]"
+	}
+	return "[image]"
+}
+
 // renderInline converts a slice of inline ADF nodes to markdown text.
-func renderInline(nodes []jiraNode) string {
+func renderInline(nodes []jiraNode, attachments map[string]string) string {
 	var sb strings.Builder
 	for _, node := range nodes {
 		switch node.Type {
@@ -371,9 +402,10 @@ func renderInline(nodes []jiraNode) string {
 			if url, ok := node.Attrs["url"]; ok {
 				sb.WriteString(fmt.Sprint(url))
 			}
+		case "media":
+			sb.WriteString(renderMediaNode(node, attachments))
 		default:
-			// Recurse for unknown inline nodes
-			sb.WriteString(renderInline(node.Content))
+			sb.WriteString(renderInline(node.Content, attachments))
 		}
 	}
 	return sb.String()
@@ -390,7 +422,7 @@ func renderTable(node jiraNode) string {
 		for _, cell := range row.Content {
 			var parts []string
 			for _, child := range cell.Content {
-				parts = append(parts, renderBlock(child, ""))
+				parts = append(parts, renderBlock(child, "", nil))
 			}
 			cells = append(cells, strings.Join(parts, " "))
 		}

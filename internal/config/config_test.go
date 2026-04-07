@@ -125,3 +125,54 @@ func TestActiveProfileConfig(t *testing.T) {
 		t.Fatal("expected error for empty active profile, got nil")
 	}
 }
+
+func TestSavedFiltersPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	cfg := &Config{
+		ActiveProfile: "work",
+		Profiles: map[string]Profile{
+			"work": {
+				URL:      "https://company.atlassian.net",
+				Email:    "chris@company.com",
+				APIToken: "token-123",
+				Project:  "TEST",
+				Filters: map[string]SavedFilters{
+					"TEST": {
+						StatusIDs:   []string{"10001", "10002"},
+						PriorityIDs: []string{"1"},
+						SearchText:  "azure",
+					},
+				},
+			},
+		},
+	}
+
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	p := loaded.Profiles["work"]
+	if p.Filters == nil {
+		t.Fatal("Filters map should not be nil")
+	}
+	sf, ok := p.Filters["TEST"]
+	if !ok {
+		t.Fatal("saved filters for project TEST not found")
+	}
+	if len(sf.StatusIDs) != 2 || sf.StatusIDs[0] != "10001" {
+		t.Errorf("StatusIDs = %v, want [10001, 10002]", sf.StatusIDs)
+	}
+	if len(sf.PriorityIDs) != 1 || sf.PriorityIDs[0] != "1" {
+		t.Errorf("PriorityIDs = %v, want [1]", sf.PriorityIDs)
+	}
+	if sf.SearchText != "azure" {
+		t.Errorf("SearchText = %q, want %q", sf.SearchText, "azure")
+	}
+}

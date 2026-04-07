@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -53,6 +54,45 @@ func truncateAnsi(s string, maxWidth int) string {
 	// Append reset to close any open ANSI sequences
 	result.WriteString("\x1b[0m")
 	return result.String()
+}
+
+// skipAnsi returns the portion of an ANSI-encoded string starting at visual
+// column skipWidth. It prefixes the result with a reset and re-applies the
+// last SGR sequence encountered so colours carry over correctly.
+func skipAnsi(s string, skipWidth int) string {
+	var (
+		vis     int
+		i       int
+		lastSGR string // most recent ANSI SGR sequence
+	)
+	for i < len(s) && vis < skipWidth {
+		if s[i] == '\x1b' {
+			j := i
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			lastSGR = s[i:j]
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		vis += ansi.PrintableRuneWidth(string(r))
+		i += size
+	}
+	rest := s[i:]
+	if rest == "" {
+		return ""
+	}
+	// Reset any colours leaking from the overlay, then restore the
+	// original line's style so the right portion renders correctly.
+	prefix := "\x1b[0m"
+	if lastSGR != "" {
+		prefix += lastSGR
+	}
+	return prefix + rest
 }
 
 type state int
@@ -256,6 +296,18 @@ func updateField(client *jira.Client, issueKey, field, value string) tea.Cmd {
 	}
 }
 
+func updateDescription(client *jira.Client, issueKey, markdownBody string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.UpdateDescription(issueKey, markdownBody)
+		if err != nil {
+			logDebug("UpdateDescription(%s) error: %v", issueKey, err)
+			return nil
+		}
+		logDebug("UpdateDescription(%s) success", issueKey)
+		return fieldUpdatedMsg{forKey: issueKey, field: "description"}
+	}
+}
+
 func transitionIssue(client *jira.Client, issueKey, transitionID string) tea.Cmd {
 	return func() tea.Msg {
 		err := client.TransitionIssue(issueKey, transitionID)
@@ -412,11 +464,13 @@ func fetchIssuesWithJQL(client *jira.Client, jql string) tea.Cmd {
 
 func isFilterBarKey(key string) bool {
 	switch key {
-	case "t", "s", "a", "l", "d", "D", "x":
+	case "t", "s", "p", "a", "l", "d", "D", "o", "O", "x", "S":
 		return true
 	}
 	return false
 }
+
+type borderFadeTickMsg struct{}
 
 type attachmentOpenedMsg struct{}
 
@@ -579,7 +633,10 @@ type App struct {
 	detailLoading bool
 	detailKey     string // issue key currently shown/loading in detail
 	listWidth     int    // width of the list pane (draggable)
-	dragging      bool   // true while dragging the border
+	dragging      bool    // true while dragging the border
+	borderHover   bool    // true when mouse is over the draggable border
+	borderFade    float64 // 0.0 = hidden, 1.0 = fully visible (for fade animation)
+	borderFading  bool    // true when a fade animation tick is active
 	showHelp      bool   // true when help overlay is visible
 	sort          SortState
 	spinner       spinner.Model
@@ -644,6 +701,17 @@ func NewApp(client *jira.Client, profileName, initialProject, configPath string,
 		filterBar.SetDefaultAssignee(myAccountID, "")
 	}
 
+	// Restore saved filters for the current project
+	if configPath != "" {
+		if cfg, err := config.Load(configPath); err == nil {
+			if profile, ok := cfg.Profiles[profileName]; ok && profile.Filters != nil {
+				if sf, ok := profile.Filters[initialProject]; ok {
+					filterBar.RestoreFilters(sf)
+				}
+			}
+		}
+	}
+
 	return App{
 		state:        stateLoading,
 		spinner:      s,
@@ -698,6 +766,29 @@ func saveProjectToConfig(configPath, profileName, projectKey string) tea.Cmd {
 	}
 }
 
+func saveFiltersToConfig(configPath, profileName, projectKey string, filters config.SavedFilters) tea.Cmd {
+	return func() tea.Msg {
+		if configPath == "" {
+			return nil
+		}
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return nil
+		}
+		profile, ok := cfg.Profiles[profileName]
+		if !ok {
+			return nil
+		}
+		if profile.Filters == nil {
+			profile.Filters = make(map[string]config.SavedFilters)
+		}
+		profile.Filters[projectKey] = filters
+		cfg.Profiles[profileName] = profile
+		_ = config.Save(cfg, configPath)
+		return nil
+	}
+}
+
 func sortProjectsByKey(projects []models.Project) {
 	for i := 1; i < len(projects); i++ {
 		for j := i; j > 0 && projects[j].Key < projects[j-1].Key; j-- {
@@ -718,9 +809,16 @@ func fetchIssues(client *jira.Client, sort SortState, projectKey string) tea.Cmd
 
 // Init starts the spinner and fires the initial data fetch.
 func (a App) Init() tea.Cmd {
+	var issueFetch tea.Cmd
+	if a.filterBar.HasActiveFilters() {
+		jql := a.filterBar.BuildJQL(a.projectKey, a.sort.orderByClause())
+		issueFetch = fetchIssuesWithJQL(a.client, jql)
+	} else {
+		issueFetch = fetchIssues(a.client, a.sort, a.projectKey)
+	}
 	return tea.Batch(
 		a.spinner.Tick,
-		fetchIssues(a.client, a.sort, a.projectKey),
+		issueFetch,
 		fetchProjects(a.client),
 		fetchStatusesAndTypes(a.client, a.projectKey),
 	)
@@ -742,14 +840,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.listWidth < 20 {
 			a.listWidth = 20
 		}
-		a.filterBar.SetWidth(a.listWidth)
+		a.filterBar.SetWidth(a.usableWidth())
 		if a.state == stateList {
 			a.list.width = msg.Width
 			a.list.height = msg.Height
 			a.list.clampCursor()
 			if a.detail != nil {
 				detailWidth := a.detailPaneWidth()
-				adjusted := tea.WindowSizeMsg{Width: detailWidth, Height: msg.Height - 2}
+				adjusted := tea.WindowSizeMsg{Width: detailWidth, Height: msg.Height - 1 - a.filterBar.Height()}
 				d := *a.detail
 				d, _ = d.Update(adjusted)
 				a.detail = &d
@@ -878,12 +976,36 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case borderFadeTickMsg:
+		step := 0.2
+		if a.borderHover || a.dragging {
+			a.borderFade += step
+			if a.borderFade >= 1.0 {
+				a.borderFade = 1.0
+				a.borderFading = false
+				return a, nil
+			}
+		} else {
+			a.borderFade -= step
+			if a.borderFade <= 0.0 {
+				a.borderFade = 0.0
+				a.borderFading = false
+				return a, nil
+			}
+		}
+		return a, tea.Tick(30*time.Millisecond, func(t time.Time) tea.Msg {
+			return borderFadeTickMsg{}
+		})
+
 	case filterChangedMsg:
 		jql := a.filterBar.BuildJQL(a.projectKey, a.sort.orderByClause())
 		a.state = stateLoading
 		a.detail = nil
 		a.detailKey = ""
 		return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
+
+	case filterSaveMsg:
+		return a, saveFiltersToConfig(a.configPath, a.profileName, a.projectKey, a.filterBar.GetSavedFilters())
 
 	case filterSearchTick:
 		var cmd tea.Cmd
@@ -964,6 +1086,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		jql := a.filterBar.BuildJQL(a.projectKey, a.sort.orderByClause())
 		return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
 
+	case sortChangedMsg:
+		// Sync sort state from filterBar's sort controls
+		field := a.filterBar.SortField()
+		switch field {
+		case "key":
+			a.sort.Field = SortKey
+		case "summary":
+			a.sort.Field = SortSummary
+		default:
+			a.sort.Field = SortUpdated
+		}
+		a.sort.Asc = a.filterBar.SortAsc()
+		a.list.sortCol = field
+		a.list.sortAsc = a.sort.Asc
+		a.state = stateLoading
+		a.detail = nil
+		a.detailKey = ""
+		jql := a.filterBar.BuildJQL(a.projectKey, a.filterBar.OrderByClause())
+		return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
+
 	case cursorChangedMsg:
 		// Only fetch if it's a different issue
 		if msg.issueKey != a.detailKey {
@@ -976,7 +1118,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case issueDetailMsg:
 		// Only accept if this is still the issue we're waiting for
 		if msg.forKey == a.detailKey {
-			contentHeight := a.height - 2
+			contentHeight := a.height - 1 - a.filterBar.Height()
 			detailWidth := a.detailPaneWidth()
 			d := NewDetail(msg.issue, detailWidth, contentHeight)
 			d.myAccountID = a.myAccountID
@@ -990,6 +1132,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			d.OnSummaryChanged = func(key, summary string) tea.Cmd {
 				return updateField(client, key, "summary", summary)
+			}
+			d.OnDescriptionChanged = func(key, description string) tea.Cmd {
+				return updateDescription(client, key, description)
 			}
 			d.OnAssigneeChanged = func(key, accountID string) tea.Cmd {
 				return updateField(client, key, "assignee", accountID)
@@ -1098,6 +1243,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case prioritiesMsg:
+		// Populate priority filter dropdown
+		prioItems := make([]DropdownItem, len(msg.priorities))
+		for i, p := range msg.priorities {
+			prioItems[i] = DropdownItem{ID: p.ID, Label: p.Name}
+		}
+		a.filterBar.SetPriorityItems(prioItems)
+
 		if a.detail != nil {
 			d := *a.detail
 			d.SetPriorityOptions(msg.priorities)
@@ -1284,14 +1436,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if mouseMsg, ok := msg.(tea.MouseMsg); ok {
 			if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
 				listW := a.listWidth
-				inDetailPane := mouseMsg.X > listW
+				fbH := a.filterBar.Height()
+				inDetailPane := mouseMsg.X > listW && mouseMsg.Y >= fbH
 				helpBarY := a.height - 1
 				onHelpBar := mouseMsg.Y == helpBarY
 				if !inDetailPane || onHelpBar {
 					d := *a.detail
-					d.blurAll()
+					cmd := d.blurAllAndSave()
 					a.detail = &d
-					return a, nil // consume the click — just blur, don't act on it
+					return a, cmd
 				}
 			}
 		}
@@ -1420,18 +1573,98 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 
+			// FilterBar mouse handling
+			filterBarH := a.filterBar.Height()
+
+			// When filterBar has an active dropdown overlay, intercept all mouse events
+			if a.filterBar.IsExpanded() && a.filterBar.ActiveDropdown() {
+				if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
+					overlayLines, startLine, startCol := a.filterBar.OverlayLines()
+					if overlayLines != nil {
+						overlayH := len(overlayLines)
+						overlayW := lipgloss.Width(overlayLines[0])
+						// Check if click is within the overlay bounds
+						if mouseMsg.Y >= startLine && mouseMsg.Y < startLine+overlayH &&
+							mouseMsg.X >= startCol && mouseMsg.X < startCol+overlayW {
+							overlayLine := mouseMsg.Y - startLine
+							changed := false
+							if a.filterBar.typeDrop.IsOpen() {
+								changed = a.filterBar.typeDrop.HandleClick(overlayLine)
+							} else if a.filterBar.statusDrop.IsOpen() {
+								changed = a.filterBar.statusDrop.HandleClick(overlayLine)
+							} else if a.filterBar.priorityDrop.IsOpen() {
+								changed = a.filterBar.priorityDrop.HandleClick(overlayLine)
+							} else if a.filterBar.assigneeDrop.IsOpen() {
+								changed = a.filterBar.assigneeDrop.HandleClick(overlayLine)
+							} else if a.filterBar.labelsDrop.IsOpen() {
+								changed = a.filterBar.labelsDrop.HandleClick(overlayLine)
+							} else if a.filterBar.createdFrom.IsOpen() {
+								localX := mouseMsg.X - startCol
+								changed = a.filterBar.createdFrom.HandleClick(overlayLine, localX, overlayW)
+							} else if a.filterBar.createdUntil.IsOpen() {
+								localX := mouseMsg.X - startCol
+								changed = a.filterBar.createdUntil.HandleClick(overlayLine, localX, overlayW)
+							} else if a.filterBar.sortDrop.IsOpen() {
+								changed = a.filterBar.sortDrop.HandleClick(overlayLine)
+								if changed && !a.filterBar.sortDrop.IsOpen() {
+									return a, func() tea.Msg { return sortChangedMsg{} }
+								}
+								return a, nil
+							}
+							if changed {
+								return a, func() tea.Msg { return filterChangedMsg{} }
+							}
+						} else {
+							// Click outside overlay — close all dropdowns
+							a.filterBar.closeAll()
+						}
+						return a, nil
+					}
+				}
+				return a, nil
+			}
+
+			// Handle clicks in the filterBar area (Y < filterBarH)
+			if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
+				if mouseMsg.Y < filterBarH {
+					if !a.filterBar.IsExpanded() {
+						a.filterBar.Expand()
+						return a, nil
+					}
+					cmd := a.filterBar.HandleFieldClick(mouseMsg.X, mouseMsg.Y)
+					return a, cmd
+				}
+			}
+
+			// Adjust Y for content area (below headers)
+			contentMouseMsg := mouseMsg
+			contentMouseMsg.Y = mouseMsg.Y - filterBarH
+
 			listW := a.listWidth
+
+			// Track border hover for visual feedback
+			if !a.dragging {
+				wasHover := a.borderHover
+				a.borderHover = mouseMsg.X >= listW-1 && mouseMsg.X <= listW+1 && mouseMsg.Y >= filterBarH
+				// Start fade-in or fade-out animation on hover change
+				if a.borderHover != wasHover && !a.borderFading {
+					a.borderFading = true
+					return a, tea.Tick(30*time.Millisecond, func(t time.Time) tea.Msg {
+						return borderFadeTickMsg{}
+					})
+				}
+			}
 
 			// Handle border drag
 			if mouseMsg.Action == tea.MouseActionPress && mouseMsg.Button == tea.MouseButtonLeft {
-				if mouseMsg.X >= listW-1 && mouseMsg.X <= listW+1 {
+				if mouseMsg.X >= listW-1 && mouseMsg.X <= listW+1 && mouseMsg.Y >= filterBarH {
 					a.dragging = true
 					return a, nil
 				}
 			}
 			if mouseMsg.Action == tea.MouseActionRelease {
 				a.dragging = false
-				// Don't swallow wheel events that happen to have release action
+				a.borderHover = false
 				if mouseMsg.Button != tea.MouseButtonWheelDown && mouseMsg.Button != tea.MouseButtonWheelUp {
 					return a, nil
 				}
@@ -1449,7 +1682,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					newWidth = maxListW
 				}
 				a.listWidth = newWidth
-				// Update detail dimensions
 				if a.detail != nil {
 					detailWidth := a.detailPaneWidth()
 					d := *a.detail
@@ -1459,15 +1691,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 
-			if mouseMsg.X < listW {
+			// Route to list or detail pane with Y-adjusted coordinates
+			if contentMouseMsg.X < listW {
 				var cmd tea.Cmd
-				a.list, cmd = a.list.Update(mouseMsg)
+				a.list, cmd = a.list.Update(contentMouseMsg)
 				return a, cmd
 			}
-			// Mouse in detail pane
 			if a.detail != nil {
-				adjusted := mouseMsg
-				adjusted.X = mouseMsg.X - listW - 1
+				adjusted := contentMouseMsg
+				adjusted.X = contentMouseMsg.X - listW - 1
 				d := *a.detail
 				var cmd tea.Cmd
 				d, cmd = d.Update(adjusted)
@@ -1491,7 +1723,15 @@ func (a App) View() string {
 		return ""
 	}
 
-	contentH := a.height - 1 // just help bar at bottom (no title bar)
+	// Screen-level elements with fixed dimensions
+	var filterBarView string
+	filterBarH := 0
+	if a.err == nil {
+		filterBarView = a.filterBar.View()
+		filterBarH = a.filterBar.Height()
+	}
+
+	contentH := a.height - 1 - filterBarH // help bar at bottom + filter bar at top
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -1518,21 +1758,26 @@ func (a App) View() string {
 				Align(lipgloss.Center, lipgloss.Center)
 			left = loadStyle.Render(a.spinner.View() + " Loading...")
 		} else {
-			filterView := a.filterBar.View()
-			filterH := a.filterBar.Height()
-			listH := contentH - filterH
-			if listH < 3 {
-				listH = 3
-			}
-			listView := a.list.ViewWithWidth(listW, listH)
-			left = filterView + "\n" + listView
+			listView := a.list.ViewWithWidth(listW, contentH)
+			left = listView
 		}
 
-		// Border
+		// Border — animated highlight when hovering or dragging
 		borderLines := make([]string, contentH)
-		borderStyle := lipgloss.NewStyle().Foreground(colorBorder)
+		var borderStyle lipgloss.Style
+		borderChar := "│"
+		if a.borderFade > 0.01 {
+			shade := int(a.borderFade * 5)
+			shades := []lipgloss.Color{"#3a3a4a", "#4a4a6a", "#5a5a8a", "#7a7aaa", "#8a8acc"}
+			if shade >= len(shades) {
+				shade = len(shades) - 1
+			}
+			borderStyle = lipgloss.NewStyle().Foreground(shades[shade])
+		} else {
+			borderStyle = lipgloss.NewStyle().Foreground(colorBorder)
+		}
 		for i := range borderLines {
-			borderLines[i] = borderStyle.Render("│")
+			borderLines[i] = borderStyle.Render(borderChar)
 		}
 		border := strings.Join(borderLines, "\n")
 
@@ -1570,26 +1815,6 @@ func (a App) View() string {
 	}
 	for len(contentLines) < contentH {
 		contentLines = append(contentLines, "")
-	}
-
-	// Composite filter bar dropdown overlays
-	if a.filterBar.IsExpanded() {
-		overlayLines, startLine, startCol := a.filterBar.OverlayLines()
-		if overlayLines != nil {
-			for i, oLine := range overlayLines {
-				idx := startLine + i
-				if idx >= 0 && idx < len(contentLines) {
-					existing := contentLines[idx]
-					existVis := lipgloss.Width(existing)
-					if existVis > startCol {
-						existing = truncateAnsi(existing, startCol)
-					} else {
-						existing += strings.Repeat(" ", startCol-existVis)
-					}
-					contentLines[idx] = existing + oLine
-				}
-			}
-		}
 	}
 
 	allLines := make([]string, 0, a.height)
@@ -1630,8 +1855,46 @@ func (a App) View() string {
 				}
 			}
 		}
+		// Assemble: filterBar at top, then content, then help bar
+		if filterBarH > 0 {
+			allLines = append(allLines, strings.Split(filterBarView, "\n")...)
+		}
 		allLines = append(allLines, contentLines...)
 		allLines = append(allLines, a.renderHelpBar())
+
+		// Composite dropdown overlays onto allLines using absolute positions.
+		// Preserve content to the left and right of the overlay.
+		compositeOverlay := func(overlayLines []string, startLine, startCol int) {
+			for i, oLine := range overlayLines {
+				idx := startLine + i
+				if idx >= 0 && idx < len(allLines) {
+					original := allLines[idx]
+					origVis := lipgloss.Width(original)
+					overlayW := lipgloss.Width(oLine)
+
+					var left string
+					if origVis > startCol {
+						left = truncateAnsi(original, startCol)
+					} else {
+						left = original + strings.Repeat(" ", startCol-origVis)
+					}
+
+					right := ""
+					if origVis > startCol+overlayW {
+						right = skipAnsi(original, startCol+overlayW)
+					}
+
+					allLines[idx] = left + oLine + right
+				}
+			}
+		}
+
+		// Filter bar overlays
+		if a.filterBar.IsExpanded() && filterBarH > 0 {
+			overlayLines, startLine, startCol := a.filterBar.OverlayLines()
+			compositeOverlay(overlayLines, startLine, startCol)
+		}
+
 	}
 
 	// Truncate every line to terminal width and cap total lines
@@ -1734,10 +1997,12 @@ func (a App) renderHelpBar() string {
 	profileStyle := bgStyle.Foreground(colorSuccess).PaddingRight(1)
 
 	var help string
-	if a.filterBar.IsExpanded() && a.filterBar.ActiveDropdown() {
+	if a.filterBar.IsExpanded() && (a.filterBar.createdFrom.IsOpen() || a.filterBar.createdUntil.IsOpen()) {
+		help = "←→↑↓ navigate · enter select · t today · backspace clear · esc close"
+	} else if a.filterBar.IsExpanded() && a.filterBar.ActiveDropdown() {
 		help = "↑↓ navigate · enter/space toggle · esc close"
 	} else if a.filterBar.IsExpanded() {
-		help = "t type · s status · a assignee · l labels · d dates · / search · x clear · esc close"
+		help = "t type · s status · p priority · a assignee · l labels · d/D dates · / search · o sort · O dir · S save · x clear · esc"
 	} else if a.projectDrop.IsOpen() || a.profileDrop.IsOpen() {
 		help = "↑↓ navigate · enter select · esc close"
 	} else if a.detail != nil && a.detail.Editing() {
@@ -1786,7 +2051,7 @@ func Run(client *jira.Client, profileName, initialProject, configPath string, pr
 	app := NewApp(client, profileName, initialProject, configPath, profileNames)
 	p := tea.NewProgram(app,
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
+		tea.WithMouseAllMotion(),
 	)
 	_, err := p.Run()
 	if err != nil {

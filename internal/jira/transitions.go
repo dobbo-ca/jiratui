@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/christopherdobbyn/jiratui/internal/models"
@@ -42,4 +43,19 @@ func (c *Client) GetTransitions(issueKey string) ([]models.Transition, error) {
 		}
 	}
 	return transitions, nil
+}
+
+// TransitionIssue performs a status transition on an issue.
+// The transitionID comes from GetTransitions — it's the transition's ID, not the target status ID.
+func (c *Client) TransitionIssue(issueKey, transitionID string) error {
+	payload := map[string]interface{}{
+		"transition": map[string]string{
+			"id": transitionID,
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling transition: %w", err)
+	}
+	return c.post("/rest/api/3/issue/"+issueKey+"/transitions", body)
 }

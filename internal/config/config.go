@@ -8,11 +8,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// SavedFilters stores the user's last-used filter selections per project.
+type SavedFilters struct {
+	TypeIDs      []string `yaml:"type_ids,omitempty"`
+	StatusIDs    []string `yaml:"status_ids,omitempty"`
+	PriorityIDs  []string `yaml:"priority_ids,omitempty"`
+	AssigneeIDs  []string `yaml:"assignee_ids,omitempty"`
+	LabelIDs     []string `yaml:"label_ids,omitempty"`
+	CreatedFrom  string   `yaml:"created_from,omitempty"`
+	CreatedUntil string   `yaml:"created_until,omitempty"`
+	SearchText   string   `yaml:"search_text,omitempty"`
+}
+
 type Profile struct {
 	URL      string `yaml:"url"`
 	Email    string `yaml:"email"`
 	APIToken string `yaml:"api_token"`
-	Project  string `yaml:"project,omitempty"` // last-used project key
+	Project  string `yaml:"project,omitempty"`  // last-used project key
+	Filters  map[string]SavedFilters `yaml:"filters,omitempty"` // per-project saved filters (key = project key, "" = all)
 }
 
 type Config struct {

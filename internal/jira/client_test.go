@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -237,6 +238,54 @@ func TestADFToMarkdownLink(t *testing.T) {
 	want := "See [docs](https://example.com)"
 	if got != want {
 		t.Errorf("adfToMarkdown = %q, want %q", got, want)
+	}
+}
+
+func TestADFToMarkdownMediaSingle(t *testing.T) {
+	adf := &jiraADF{
+		Type: "doc",
+		Content: []jiraNode{
+			{Type: "paragraph", Content: []jiraNode{{Type: "text", Text: "See image below:"}}},
+			{
+				Type: "mediaSingle",
+				Content: []jiraNode{
+					{Type: "media", Attrs: map[string]any{"id": "abc-123", "type": "file"}},
+				},
+			},
+		},
+	}
+
+	// With attachment lookup
+	attachments := map[string]string{"abc-123": "screenshot.png"}
+	got := adfToMarkdownWithMedia(adf, attachments)
+	if !strings.Contains(got, "[screenshot.png]") {
+		t.Errorf("expected [screenshot.png], got %q", got)
+	}
+
+	// Without attachment lookup — should fall back to [image]
+	got2 := adfToMarkdown(adf)
+	if !strings.Contains(got2, "[image]") {
+		t.Errorf("expected [image] fallback, got %q", got2)
+	}
+}
+
+func TestADFToMarkdownMediaGroup(t *testing.T) {
+	adf := &jiraADF{
+		Type: "doc",
+		Content: []jiraNode{
+			{
+				Type: "mediaGroup",
+				Content: []jiraNode{
+					{Type: "media", Attrs: map[string]any{"id": "id-1", "type": "file"}},
+					{Type: "media", Attrs: map[string]any{"id": "id-2", "type": "file"}},
+				},
+			},
+		},
+	}
+	attachments := map[string]string{"id-1": "photo.jpg", "id-2": "diagram.svg"}
+	got := adfToMarkdownWithMedia(adf, attachments)
+	if !strings.Contains(got, "[photo.jpg]") || !strings.Contains(got, "[diagram.svg]") {
+		t.Errorf("expected both filenames, got %q", got)
 	}
 }
 

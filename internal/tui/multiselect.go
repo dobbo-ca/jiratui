@@ -125,6 +125,22 @@ func (ms *MultiSelect) SetItems(items []DropdownItem) {
 	ms.selected = make(map[string]bool)
 }
 
+// SetItemsKeepSelection updates the item list but preserves any existing
+// selections whose IDs still appear in the new list.
+func (ms *MultiSelect) SetItemsKeepSelection(items []DropdownItem) {
+	newIDs := make(map[string]bool, len(items))
+	for _, item := range items {
+		newIDs[item.ID] = true
+	}
+	// Remove selections for IDs that no longer exist
+	for id := range ms.selected {
+		if !newIDs[id] {
+			delete(ms.selected, id)
+		}
+	}
+	ms.items = items
+}
+
 func (ms *MultiSelect) SetWidth(w int) {
 	ms.width = w
 }

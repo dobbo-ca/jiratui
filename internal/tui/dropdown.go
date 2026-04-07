@@ -44,6 +44,8 @@ type Dropdown struct {
 	minSearchLen int                          // minimum chars before search triggers (0 = filter immediately)
 	searchSeq    int                          // debounce counter
 	OnSearch     func(query string) tea.Cmd   // async search callback; replaces local filtering when set
+	overlayWidth int                          // if > 0, overlay renders at this width instead of field width
+	defaultItems []DropdownItem               // original items to restore when search is cleared
 }
 
 // NewDropdown creates a new dropdown with the given label and items.
@@ -175,6 +177,14 @@ func (d *Dropdown) SetItems(items []DropdownItem) {
 	d.applyFilter()
 }
 
+// SetDefaultItems sets the items shown when no search is active.
+// These are restored when the search box is cleared.
+func (d *Dropdown) SetDefaultItems(items []DropdownItem) {
+	d.defaultItems = items
+	d.items = items
+	d.applyFilter()
+}
+
 // rebuildAllDisplay combines pinned items and filtered items into the navigable list.
 func (d *Dropdown) rebuildAllDisplay() {
 	d.allDisplay = make([]DropdownItem, 0, len(d.pinnedItems)+len(d.filtered))
@@ -230,6 +240,14 @@ func (d Dropdown) Update(msg tea.Msg) (Dropdown, tea.Cmd) {
 					d.rebuildAllDisplay()
 					d.cursor = 0
 					d.scrollOff = 0
+					return d, cmd
+				}
+				// Empty query: restore default items (e.g. board assignees)
+				if query == "" {
+					if d.defaultItems != nil {
+						d.items = d.defaultItems
+					}
+					d.applyFilter()
 					return d, cmd
 				}
 				d.searchSeq++
@@ -430,6 +448,9 @@ func (d Dropdown) RenderOverlay() []string {
 	}
 
 	width := d.width
+	if d.overlayWidth > 0 {
+		width = d.overlayWidth
+	}
 	if width < 8 {
 		width = 8
 	}

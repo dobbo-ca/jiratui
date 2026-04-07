@@ -18,6 +18,45 @@ import (
 	"github.com/pkg/browser"
 )
 
+// isEscapeSequenceFragment returns true if the key message looks like a raw
+// escape sequence fragment that leaked through as a KeyMsg. This catches mouse
+// reports (e.g. "[65;133;27M"), CSI fragments, and other non-text sequences.
+func isEscapeSequenceFragment(msg tea.KeyMsg) bool {
+	if msg.Type != tea.KeyRunes {
+		return false
+	}
+	runes := msg.Runes
+	if len(runes) == 0 {
+		return false
+	}
+	// Multi-rune messages starting with '[' or '<' are escape sequence fragments.
+	// A real user typing '[' produces a single-rune KeyMsg.
+	if len(runes) > 1 && (runes[0] == '[' || runes[0] == '<') {
+		return true
+	}
+	// Check for semicolons (CSI parameter separators — never in normal text input)
+	for _, r := range runes {
+		if r == ';' {
+			return true
+		}
+	}
+	// Multi-rune messages that are all digits + uppercase letters are likely
+	// escape sequence fragments (e.g. "27M", "65")
+	if len(runes) > 1 {
+		allDigitsOrControl := true
+		for _, r := range runes {
+			if !((r >= '0' && r <= '9') || r == 'M' || r == 'm') {
+				allDigitsOrControl = false
+				break
+			}
+		}
+		if allDigitsOrControl {
+			return true
+		}
+	}
+	return false
+}
+
 type detailTab int
 
 const (
@@ -46,8 +85,10 @@ type Detail struct {
 
 	// Editable fields
 	titleInput   textinput.Model
-	descInput    textarea.Model
-	descFocused  bool
+	descInput          textarea.Model
+	descFocused        bool
+	descEscSeqPending  bool // true after receiving a lone '[' that may be an escape sequence start
+	descViewScrollY    int  // independent viewport scroll offset for description editor
 	assigneeDrop Dropdown
 	statusDrop   Dropdown
 	priorityDrop Dropdown
@@ -92,9 +133,22 @@ type Detail struct {
 	confirmLinkDelete   bool
 	confirmLinkDeleteID string
 
+	// Navigation callback — navigates to a different issue in the detail pane
+	OnNavigate func(issueKey string) tea.Cmd
+
+	// Attachment callbacks
+	OnAttachmentOpen   func(attachment models.Attachment) tea.Cmd
+	OnAttachmentUpload func(issueKey, filePath string) tea.Cmd
+	OnAttachmentDelete func(issueKey, attachmentID string) tea.Cmd
+	downloadingAttach  string // filename currently downloading, "" if none
+	uploadingAttach    bool   // true while upload is in progress
+	confirmAttachDel   bool
+	confirmAttachDelID string
+
 	// Change callbacks — each fires a tea.Cmd that performs the Jira API update
-	OnLabelsChanged   func(issueKey string, labels []string) tea.Cmd
-	OnSummaryChanged  func(issueKey, summary string) tea.Cmd
+	OnLabelsChanged       func(issueKey string, labels []string) tea.Cmd
+	OnSummaryChanged      func(issueKey, summary string) tea.Cmd
+	OnDescriptionChanged  func(issueKey, description string) tea.Cmd
 	OnAssigneeChanged func(issueKey, accountID string) tea.Cmd
 	OnStatusChanged   func(issueKey, transitionID string) tea.Cmd
 	OnPriorityChanged func(issueKey, priorityID string) tea.Cmd
@@ -353,7 +407,8 @@ func (d Detail) Editing() bool {
 		d.priorityDrop.IsOpen() || d.dueDatePick.IsOpen() ||
 		d.parentDrop.IsOpen() || d.labelsEditing ||
 		d.commentMode != commentIdle || d.confirmDelete ||
-		d.linkAdding || d.confirmLinkDelete
+		d.linkAdding || d.confirmLinkDelete ||
+		d.confirmAttachDel
 }
 
 // tabLabels returns the display labels for each tab.
@@ -475,11 +530,75 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 		if d.descFocused {
 			if msg.String() == "esc" {
 				d.descFocused = false
+				d.descEscSeqPending = false
 				d.descInput.Blur()
+				return d, d.checkDescriptionChanged()
+			}
+			if msg.String() == "ctrl+s" {
+				d.descFocused = false
+				d.descEscSeqPending = false
+				d.descInput.Blur()
+				return d, d.checkDescriptionChanged()
+			}
+			// Page up/down: move cursor by one page of visual lines, viewport follows
+			if msg.Type == tea.KeyPgDown {
+				visH := d.descVisibleLines()
+				for i := 0; i < visH; i++ {
+					d.descInput.CursorDown()
+				}
+				// Scroll viewport to follow cursor
+				curVis := d.descCursorVisualLine()
+				if curVis >= d.descViewScrollY+visH {
+					d.descViewScrollY = curVis - visH + 1
+				}
+				max := d.descMaxEditScroll()
+				if d.descViewScrollY > max {
+					d.descViewScrollY = max
+				}
 				return d, nil
+			}
+			if msg.Type == tea.KeyPgUp {
+				visH := d.descVisibleLines()
+				for i := 0; i < visH; i++ {
+					d.descInput.CursorUp()
+				}
+				// Scroll viewport to follow cursor
+				curVis := d.descCursorVisualLine()
+				if curVis < d.descViewScrollY {
+					d.descViewScrollY = curVis
+				}
+				return d, nil
+			}
+			if isEscapeSequenceFragment(msg) {
+				d.descEscSeqPending = false
+				return d, nil
+			}
+			// A lone '[' may be the start of a split escape sequence.
+			// Hold it — if the next message is an escape fragment, discard both.
+			if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == '[' {
+				if d.descEscSeqPending {
+					// Two consecutive '[' — first was real, insert it
+					d.descInput, _ = d.descInput.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+				}
+				d.descEscSeqPending = true
+				return d, nil
+			}
+			// If we had a pending '[' and this is normal input, insert the '[' first
+			if d.descEscSeqPending {
+				d.descEscSeqPending = false
+				d.descInput, _ = d.descInput.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
 			}
 			var cmd tea.Cmd
 			d.descInput, cmd = d.descInput.Update(msg)
+			// Auto-scroll viewport to keep cursor visible (using visual/wrapped lines)
+			curVisLine := d.descCursorVisualLine()
+			visH := d.descVisibleLines()
+			if curVisLine < d.descViewScrollY {
+				d.descViewScrollY = curVisLine
+			}
+			if curVisLine >= d.descViewScrollY+visH {
+				d.descViewScrollY = curVisLine - visH + 1
+			}
 			return d, cmd
 		}
 
@@ -491,6 +610,9 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 			}
 			if msg.String() == "ctrl+s" {
 				return d, d.submitComment()
+			}
+			if isEscapeSequenceFragment(msg) {
+				return d, nil
 			}
 			var cmd tea.Cmd
 			d.commentInput, cmd = d.commentInput.Update(msg)
@@ -569,6 +691,25 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 			return d, nil
 		}
 
+		// Attachment delete confirmation
+		if d.confirmAttachDel {
+			switch msg.String() {
+			case "y":
+				attID := d.confirmAttachDelID
+				d.confirmAttachDel = false
+				d.confirmAttachDelID = ""
+				if d.OnAttachmentDelete != nil {
+					return d, d.OnAttachmentDelete(d.issue.Key, attID)
+				}
+				return d, nil
+			case "n", "esc":
+				d.confirmAttachDel = false
+				d.confirmAttachDelID = ""
+				return d, nil
+			}
+			return d, nil
+		}
+
 		switch {
 		case key.Matches(msg, detailKeys.Tab1):
 			d.activeTab = tabDetails
@@ -583,11 +724,8 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 			d.activeTab = tabAttachments
 			d.scrollY = 0
 		case key.Matches(msg, detailKeys.Down):
-			if d.activeTab == tabDetails {
-				if d.scrollY < d.descMaxScroll() {
-					d.scrollY++
-				}
-			} else {
+			maxScroll := d.tabMaxScroll()
+			if d.scrollY < maxScroll {
 				d.scrollY++
 			}
 		case key.Matches(msg, detailKeys.Up):
@@ -607,15 +745,35 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 			return d, nil
 		}
 
-		// Handle wheel events before press/non-press split so they always work.
-		// When description is focused, we handle scrolling ourselves rather than
-		// letting the textarea receive wheel events (which corrupts its viewport).
-		if msg.Button == tea.MouseButtonWheelDown {
-			if d.activeTab == tabDetails {
-				if d.scrollY < d.descMaxScroll() {
-					d.scrollY++
+		// When description editor is focused, scroll the viewport independently of cursor
+		if d.descFocused {
+			if msg.Button == tea.MouseButtonWheelDown {
+				d.descViewScrollY += 3
+				max := d.descMaxEditScroll()
+				if d.descViewScrollY > max {
+					d.descViewScrollY = max
 				}
-			} else {
+				return d, nil
+			}
+			if msg.Button == tea.MouseButtonWheelUp {
+				d.descViewScrollY -= 3
+				if d.descViewScrollY < 0 {
+					d.descViewScrollY = 0
+				}
+				return d, nil
+			}
+		}
+		// When comment editor is focused, consume wheel events
+		if d.commentMode != commentIdle {
+			if msg.Button == tea.MouseButtonWheelDown || msg.Button == tea.MouseButtonWheelUp {
+				return d, nil
+			}
+		}
+
+		// Handle wheel events for read-only scrolling
+		if msg.Button == tea.MouseButtonWheelDown {
+			maxScroll := d.tabMaxScroll()
+			if d.scrollY < maxScroll {
 				d.scrollY++
 			}
 			return d, nil
@@ -642,6 +800,8 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 				return d, d.handleCommentClick(msg.X, msg.Y-2)
 			} else if d.activeTab == tabAssociations {
 				return d, d.handleAssociationClick(msg.X, msg.Y-2)
+			} else if d.activeTab == tabAttachments {
+				return d, d.handleAttachmentClick(msg.X, msg.Y-2)
 			}
 			return d, nil
 		}
@@ -653,6 +813,28 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 			max := d.descMaxScroll()
 			if d.scrollY > max {
 				d.scrollY = max
+			}
+			// Re-wrap and clamp edit scroll on resize
+			if d.descFocused {
+				// Update textarea width to match new size
+				innerW := d.width - 1 - 2 - 2
+				if innerW < 20 {
+					innerW = 20
+				}
+				d.descInput.SetWidth(innerW)
+				// Clamp scroll and re-sync cursor visibility
+				max := d.descMaxEditScroll()
+				if d.descViewScrollY > max {
+					d.descViewScrollY = max
+				}
+				curVis := d.descCursorVisualLine()
+				visH := d.descVisibleLines()
+				if curVis < d.descViewScrollY {
+					d.descViewScrollY = curVis
+				}
+				if curVis >= d.descViewScrollY+visH {
+					d.descViewScrollY = curVis - visH + 1
+				}
 			}
 		}
 		return d, nil
@@ -697,6 +879,17 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 		}
 	}
 	if d.descFocused {
+		// Only forward safe message types to the textarea (cursor blink, etc.)
+		// Block mouse events and any stray key messages that bypassed the KeyMsg handler
+		switch m := msg.(type) {
+		case tea.MouseMsg:
+			return d, nil
+		case tea.KeyMsg:
+			// KeyMsg shouldn't reach here (handled above), but filter just in case
+			if isEscapeSequenceFragment(m) {
+				return d, nil
+			}
+		}
 		var cmd tea.Cmd
 		d.descInput, cmd = d.descInput.Update(msg)
 		return d, cmd
@@ -729,6 +922,19 @@ func (d *Detail) handleTabClick(x int) {
 	}
 }
 
+// blurAllAndSave unfocuses all fields and saves any pending changes.
+func (d *Detail) blurAllAndSave() tea.Cmd {
+	var cmds []tea.Cmd
+	if d.descFocused {
+		cmds = append(cmds, d.checkDescriptionChanged())
+	}
+	if d.titleInput.Focused() {
+		cmds = append(cmds, d.checkSummaryChanged())
+	}
+	d.blurAll()
+	return tea.Batch(cmds...)
+}
+
 // blurAll unfocuses all editable fields.
 func (d *Detail) blurAll() {
 	d.titleInput.Blur()
@@ -745,6 +951,8 @@ func (d *Detail) blurAll() {
 	d.cancelLinkAdd()
 	d.confirmLinkDelete = false
 	d.confirmLinkDeleteID = ""
+	d.confirmAttachDel = false
+	d.confirmAttachDelID = ""
 }
 
 // blurComment resets all comment interaction state.
@@ -988,10 +1196,20 @@ func (d *Detail) handleAssociationClick(x, y int) tea.Cmd {
 			lineY++ // group header
 			for _, link := range groups[groupName] {
 				if adjustedY == lineY {
-					// Check if click is near the ✗ delete button (right side of line)
+					// Delete button at right edge
 					if x >= d.width-10 {
 						d.startLinkDelete(link.ID)
 						return nil
+					}
+					// Click on issue key area — navigate to that issue
+					var issueKey string
+					if link.OutwardIssue != nil {
+						issueKey = link.OutwardIssue.Key
+					} else if link.InwardIssue != nil {
+						issueKey = link.InwardIssue.Key
+					}
+					if issueKey != "" && d.OnNavigate != nil {
+						return d.OnNavigate(issueKey)
 					}
 				}
 				lineY++
@@ -999,6 +1217,17 @@ func (d *Detail) handleAssociationClick(x, y int) tea.Cmd {
 			if gi < len(groupOrder)-1 || len(d.issue.Subtasks) > 0 {
 				lineY++ // separator
 			}
+		}
+	}
+
+	// Subtasks section
+	if len(d.issue.Subtasks) > 0 {
+		lineY++ // "Subtasks" header
+		for _, st := range d.issue.Subtasks {
+			if adjustedY == lineY && d.OnNavigate != nil {
+				return d.OnNavigate(st.Key)
+			}
+			lineY++
 		}
 	}
 
@@ -1120,8 +1349,21 @@ func (d *Detail) handleDetailClick(x, y int) tea.Cmd {
 			return d.handleLabelClick(x, y, row5Y, w)
 		}
 
-		d.blurAll()
-		return nil
+		// Click within the description area while editing — reposition cursor
+		if d.descFocused && y >= row6Y {
+			visualLine := (y - row6Y - 1) + d.descViewScrollY
+			if visualLine < 0 {
+				visualLine = 0
+			}
+			clickCol := x - 2
+			if clickCol < 0 {
+				clickCol = 0
+			}
+			d.descSetCursorToVisualLine(visualLine, clickCol)
+			return nil
+		}
+
+		return d.blurAllAndSave()
 	}
 
 	// Row 1: Title (full width)
@@ -1180,9 +1422,29 @@ func (d *Detail) handleDetailClick(x, y int) tea.Cmd {
 
 	// Row 6+: Description
 	if y >= row6Y {
+		// Account for the read-only scroll offset that was active before editing
+		savedScrollY := d.scrollY
 		d.blurAll()
 		d.descFocused = true
+		d.descViewScrollY = 0
 		d.descInput.Focus()
+		// Map visual click position to logical line + column
+		// Add the read-only scroll offset since the content was scrolled
+		visualLine := (y - row6Y - 1) + savedScrollY
+		if visualLine < 0 {
+			visualLine = 0
+		}
+		clickCol := x - 2
+		if clickCol < 0 {
+			clickCol = 0
+		}
+		d.descSetCursorToVisualLine(visualLine, clickCol)
+		// Set edit scroll to match where the user was viewing
+		d.descViewScrollY = savedScrollY
+		max := d.descMaxEditScroll()
+		if d.descViewScrollY > max {
+			d.descViewScrollY = max
+		}
 		return d.descInput.Cursor.BlinkCmd()
 	}
 
@@ -1251,6 +1513,131 @@ func (d *Detail) checkSummaryChanged() tea.Cmd {
 		d.issue.Summary = newVal
 		d.markUpdated()
 		return d.OnSummaryChanged(d.issue.Key, newVal)
+	}
+	return nil
+}
+
+// descVisibleLines returns how many lines of the description editor are visible.
+func (d *Detail) descVisibleLines() int {
+	// detail height minus fixed rows (tab bar=2, title=3, row2=3, row3=3, row4=3, labels=3, border=2)
+	h := d.height - 19
+	if h < 3 {
+		h = 3
+	}
+	return h
+}
+
+// descTextWidth returns the inner width available for description text.
+func (d *Detail) descTextWidth() int {
+	w := d.width - 1 - 2 - 2 // outer - border - padding
+	if w < 10 {
+		w = 10
+	}
+	return w
+}
+
+// descWrappedHeight returns the number of visual lines a logical line wraps to,
+// matching the textarea's internal wrap algorithm (rune-based at textarea width).
+func (d *Detail) descWrappedHeight(line string) int {
+	w := d.descTextWidth()
+	if w <= 0 {
+		return 1
+	}
+	runeLen := utf8.RuneCountInString(line)
+	if runeLen == 0 {
+		return 1
+	}
+	wrapped := (runeLen + w - 1) / w
+	return wrapped
+}
+
+// descLogicalToVisual returns the visual (wrapped) line number for a given
+// logical line. It counts how many visual lines all prior logical lines take.
+func (d *Detail) descLogicalToVisual(logicalLine int) int {
+	val := d.descInput.Value()
+	lines := strings.Split(val, "\n")
+	visual := 0
+	for i := 0; i < logicalLine && i < len(lines); i++ {
+		visual += d.descWrappedHeight(lines[i])
+	}
+	return visual
+}
+
+// descVisualToLogical converts a visual (wrapped) line number to a logical
+// line number and the sub-line offset within that logical line.
+func (d *Detail) descVisualToLogical(visualLine int) (logicalLine, subLine int) {
+	val := d.descInput.Value()
+	lines := strings.Split(val, "\n")
+	visual := 0
+	for i, line := range lines {
+		h := d.descWrappedHeight(line)
+		if visual+h > visualLine {
+			return i, visualLine - visual
+		}
+		visual += h
+	}
+	if len(lines) > 0 {
+		return len(lines) - 1, 0
+	}
+	return 0, 0
+}
+
+// descTotalVisualLines returns the total number of visual (wrapped) lines.
+func (d *Detail) descTotalVisualLines() int {
+	val := d.descInput.Value()
+	lines := strings.Split(val, "\n")
+	total := 0
+	for _, line := range lines {
+		total += d.descWrappedHeight(line)
+	}
+	return total
+}
+
+// descMaxEditScroll returns the max scroll offset for the description editor.
+func (d *Detail) descMaxEditScroll() int {
+	max := d.descTotalVisualLines() - d.descVisibleLines()
+	if max < 0 {
+		return 0
+	}
+	return max
+}
+
+// descCursorVisualLine returns the visual (wrapped) line the cursor is currently on.
+func (d *Detail) descCursorVisualLine() int {
+	logLine := d.descInput.Line()
+	vis := d.descLogicalToVisual(logLine)
+	// Add sub-line offset from LineInfo
+	li := d.descInput.LineInfo()
+	vis += li.RowOffset
+	return vis
+}
+
+// descSetCursorToVisualLine moves the textarea cursor to the given visual
+// (wrapped) line by navigating from the top. Each CursorDown moves one
+// visual line (including wrapped sub-lines).
+func (d *Detail) descSetCursorToVisualLine(visualLine, col int) {
+	// Go to the very top first
+	for d.descInput.Line() > 0 || d.descInput.LineInfo().RowOffset > 0 {
+		d.descInput.CursorUp()
+	}
+	d.descInput.CursorStart()
+	// Navigate down by visual lines
+	for i := 0; i < visualLine; i++ {
+		d.descInput.CursorDown()
+	}
+	if col < 0 {
+		col = 0
+	}
+	// SetCursor sets column within the current logical line's sub-line
+	d.descInput.SetCursor(d.descInput.LineInfo().StartColumn + col)
+}
+
+func (d *Detail) checkDescriptionChanged() tea.Cmd {
+	newVal := d.descInput.Value()
+	if newVal != d.issue.Description && d.OnDescriptionChanged != nil {
+		d.issue.Description = newVal
+		d.markUpdated()
+		return d.OnDescriptionChanged(d.issue.Key, newVal)
 	}
 	return nil
 }
@@ -1356,6 +1743,37 @@ func (d *Detail) checkParentChanged() tea.Cmd {
 		return d.OnParentChanged(d.issue.Key, sel.ID)
 	}
 	return nil
+}
+
+// tabMaxScroll returns the max scroll for the current tab.
+func (d Detail) tabMaxScroll() int {
+	switch d.activeTab {
+	case tabDetails:
+		return d.descMaxScroll()
+	case tabComments:
+		// Estimate: each comment ~6 lines + header
+		lines := len(d.issue.Comments) * 8
+		maxScroll := lines - d.height + 4
+		if maxScroll < 0 {
+			return 0
+		}
+		return maxScroll
+	case tabAssociations:
+		lines := len(d.issue.Links)*2 + len(d.issue.Subtasks)*2 + 4
+		maxScroll := lines - d.height + 4
+		if maxScroll < 0 {
+			return 0
+		}
+		return maxScroll
+	case tabAttachments:
+		lines := len(d.issue.Attachments)*2 + 2
+		maxScroll := lines - d.height + 4
+		if maxScroll < 0 {
+			return 0
+		}
+		return maxScroll
+	}
+	return 0
 }
 
 func (d Detail) descMaxScroll() int {
@@ -1915,16 +2333,36 @@ func (d Detail) renderTextareaField(label string, ta *textarea.Model, width, con
 		top := bdr.Render("╭─") + lbl.Render(labelText) + bdr.Render(strings.Repeat("─", dashes)+"╮")
 
 		ta.SetWidth(valW)
-		ta.SetHeight(contentLines)
+		// Set height very large so textarea renders ALL lines without internal scrolling.
+		// We apply our own viewport slice via descViewScrollY.
+		ta.SetHeight(500)
 		ta.FocusedStyle.Base = lipgloss.NewStyle()
 		taView := ta.View()
 
 		taLines := strings.Split(taView, "\n")
+
+		// Use our own computed total visual lines for precise clamping (0 buffer)
+		totalVisual := d.descTotalVisualLines()
+		if totalVisual < 1 {
+			totalVisual = 1
+		}
+
+		// Apply independent viewport scroll, clamped to actual content
+		maxScroll := totalVisual - contentLines
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		scrollOff := d.descViewScrollY
+		if scrollOff > maxScroll {
+			scrollOff = maxScroll
+		}
+		if scrollOff < 0 {
+			scrollOff = 0
+		}
+
 		var midLines []string
-		for i, line := range taLines {
-			if i >= contentLines {
-				break
-			}
+		for i := scrollOff; i < scrollOff+contentLines && i < len(taLines); i++ {
+			line := taLines[i]
 			visW := lipgloss.Width(line)
 			pad := valW - visW
 			if pad < 0 {
@@ -2415,21 +2853,103 @@ func (d Detail) renderAssociationsTab() string {
 }
 
 func (d Detail) renderAttachmentsTab() string {
+	var b strings.Builder
+	contentWidth := d.width - 6
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+	dotStyle := lipgloss.NewStyle().Foreground(colorBorder)
+
+	// Upload prompt
+	if d.uploadingAttach {
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(colorWarning).Render("⏳ Uploading...") + "\n")
+	} else {
+		addStyle := lipgloss.NewStyle().Foreground(colorSubtle).Italic(true)
+		b.WriteString("  " + addStyle.Render("Upload file...") + "\n")
+	}
+	b.WriteString("  " + dotStyle.Render(strings.Repeat("─", contentWidth)) + "\n")
+
 	if len(d.issue.Attachments) == 0 {
 		subtle := lipgloss.NewStyle().Foreground(colorSubtle)
-		return "  " + subtle.Render("No attachments.")
+		b.WriteString("  " + subtle.Render("No attachments."))
+		return b.String()
 	}
 
 	nameStyle := lipgloss.NewStyle().Foreground(colorAccent)
 	sizeStyle := lipgloss.NewStyle().Foreground(colorSubtle)
 	typeStyle := lipgloss.NewStyle().Foreground(colorInfo)
 
-	var b strings.Builder
+	deleteStyle := lipgloss.NewStyle().Foreground(colorSubtle)
+
 	for _, att := range d.issue.Attachments {
+		if d.confirmAttachDel && d.confirmAttachDelID == att.ID {
+			line := "  " + nameStyle.Render(att.Filename) + "  " +
+				lipgloss.NewStyle().Foreground(colorError).Render("Delete? ") +
+				lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("[y]") +
+				lipgloss.NewStyle().Foreground(colorSubtle).Render("es / ") +
+				lipgloss.NewStyle().Foreground(colorText).Bold(true).Render("[n]") +
+				lipgloss.NewStyle().Foreground(colorSubtle).Render("o")
+			b.WriteString(line + "\n")
+			continue
+		}
 		sizeStr := formatFileSize(att.Size)
-		b.WriteString("  " + nameStyle.Render(att.Filename) + "  " + sizeStyle.Render(sizeStr) + "  " + typeStyle.Render(att.MimeType) + "\n")
+		line := "  " + nameStyle.Render(att.Filename) + "  " + sizeStyle.Render(sizeStr) + "  " + typeStyle.Render(att.MimeType)
+		if d.downloadingAttach == att.Filename {
+			line += "  " + lipgloss.NewStyle().Foreground(colorWarning).Render("⏳ Downloading...")
+		}
+		line += "  " + deleteStyle.Render("✗")
+		b.WriteString(line + "\n")
 	}
 	return b.String()
+}
+
+func isImageMIME(mime string) bool {
+	return strings.HasPrefix(mime, "image/")
+}
+
+func (d *Detail) handleAttachmentClick(x, y int) tea.Cmd {
+	adjustedY := y + d.scrollY
+
+	// "Upload file..." prompt is line 0
+	if adjustedY == 0 && !d.uploadingAttach {
+		d.uploadingAttach = true
+		if d.OnAttachmentUpload != nil {
+			return d.OnAttachmentUpload(d.issue.Key, "")
+		}
+		return nil
+	}
+
+	// Attachments start at line 2 (upload prompt + separator)
+	idx := adjustedY - 2
+	if idx < 0 || idx >= len(d.issue.Attachments) {
+		return nil
+	}
+	att := d.issue.Attachments[idx]
+
+	// Compute where the ✗ starts: measure the line content before it
+	sizeStr := formatFileSize(att.Size)
+	linePrefix := "  " + att.Filename + "  " + sizeStr + "  " + att.MimeType + "  "
+	deleteX := len(linePrefix)
+
+	// Delete click (✗ at end of line)
+	if x >= deleteX {
+		d.confirmAttachDel = true
+		d.confirmAttachDelID = att.ID
+		return nil
+	}
+
+	// Open click (image files only)
+	if !isImageMIME(att.MimeType) {
+		return nil
+	}
+	if d.downloadingAttach != "" {
+		return nil
+	}
+	if d.OnAttachmentOpen != nil {
+		d.downloadingAttach = att.Filename
+		return d.OnAttachmentOpen(att)
+	}
+	return nil
 }
 
 func formatFileSize(bytes int) string {

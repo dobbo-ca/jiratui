@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -91,10 +92,16 @@ func (c *Client) GetIssue(key string) (*models.Issue, error) {
 func mapIssue(ji jiraIssue, baseURL string) models.Issue {
 	f := ji.Fields
 
+	// Build attachment lookup for resolving media nodes in ADF
+	attachmentMap := make(map[string]string, len(f.Attachment))
+	for _, a := range f.Attachment {
+		attachmentMap[a.ID] = a.Filename
+	}
+
 	issue := models.Issue{
 		Key:         ji.Key,
 		Summary:     f.Summary,
-		Description: extractTextFromADF(f.Description),
+		Description: adfToMarkdownWithMedia(f.Description, attachmentMap),
 		Status: models.Status{
 			ID:   f.Status.ID,
 			Name: f.Status.Name,
@@ -204,7 +211,7 @@ func mapIssue(ji jiraIssue, baseURL string) models.Issue {
 			issue.Comments[i] = models.Comment{
 				ID:      jc.ID,
 				Author:  *author,
-				Body:    extractTextFromADF(jc.Body),
+				Body:    adfToMarkdownWithMedia(jc.Body, attachmentMap),
 				Created: parseTime(jc.Created),
 				Updated: parseTime(jc.Updated),
 			}
@@ -212,4 +219,63 @@ func mapIssue(ji jiraIssue, baseURL string) models.Issue {
 	}
 
 	return issue
+}
+
+// UpdateLabels sets the labels on an issue.
+func (c *Client) UpdateLabels(issueKey string, labels []string) error {
+	return c.updateField(issueKey, "labels", labels)
+}
+
+// UpdateSummary sets the summary (title) on an issue.
+func (c *Client) UpdateSummary(issueKey, summary string) error {
+	return c.updateField(issueKey, "summary", summary)
+}
+
+// UpdateDescription sets the description on an issue using markdown (converted to ADF).
+func (c *Client) UpdateDescription(issueKey, markdownBody string) error {
+	adf := markdownToADF(markdownBody)
+	return c.updateField(issueKey, "description", adf)
+}
+
+// UpdatePriority sets the priority on an issue.
+func (c *Client) UpdatePriority(issueKey, priorityID string) error {
+	return c.updateField(issueKey, "priority", map[string]string{"id": priorityID})
+}
+
+// UpdateDueDate sets or clears the due date on an issue. Pass "" to clear.
+func (c *Client) UpdateDueDate(issueKey, dueDate string) error {
+	if dueDate == "" {
+		return c.updateField(issueKey, "duedate", nil)
+	}
+	return c.updateField(issueKey, "duedate", dueDate)
+}
+
+// UpdateParent sets or clears the parent on an issue. Pass "" to clear.
+func (c *Client) UpdateParent(issueKey, parentKey string) error {
+	if parentKey == "" {
+		return c.updateField(issueKey, "parent", nil)
+	}
+	return c.updateField(issueKey, "parent", map[string]string{"key": parentKey})
+}
+
+// UpdateAssignee sets the assignee on an issue. Pass "" to unassign.
+func (c *Client) UpdateAssignee(issueKey, accountID string) error {
+	if accountID == "" {
+		return c.updateField(issueKey, "assignee", nil)
+	}
+	return c.updateField(issueKey, "assignee", map[string]string{"accountId": accountID})
+}
+
+// updateField is a generic helper to update a single field on an issue.
+func (c *Client) updateField(issueKey, fieldName string, value interface{}) error {
+	payload := map[string]interface{}{
+		"fields": map[string]interface{}{
+			fieldName: value,
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling %s: %w", fieldName, err)
+	}
+	return c.put("/rest/api/3/issue/"+issueKey, body)
 }
