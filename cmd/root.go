@@ -10,10 +10,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	appVersion = "dev"
+	appCommit  = "none"
+	appDate    = "unknown"
+)
+
+// SetVersionInfo sets the version info from ldflags.
+func SetVersionInfo(version, commit, date string) {
+	appVersion = version
+	appCommit = commit
+	appDate = date
+}
+
 var rootCmd = &cobra.Command{
-	Use:   "jiratui",
-	Short: "A terminal UI for Jira Cloud",
-	Long:  "jiratui is a fast, lightweight terminal user interface for browsing and interacting with Jira Cloud.",
+	Use:     "jt",
+	Short:   "A terminal UI for Jira Cloud",
+	Long:    "jt is a fast, lightweight terminal user interface for browsing and interacting with Jira Cloud.",
+	Version: "dev",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Skip first-run check for auth commands (they handle it themselves)
 		if cmd.Parent() != nil && cmd.Parent().Use == "auth" {
@@ -56,6 +70,7 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
+	rootCmd.Version = fmt.Sprintf("%s (commit: %s, built: %s)", appVersion, appCommit, appDate)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
