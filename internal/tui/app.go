@@ -132,6 +132,14 @@ func (a App) contentHeight() int {
 	return a.height - 1 - a.filterBar.Height()
 }
 
+// killAllClaudeSessions kills all active Claude Code tmux sessions.
+func (a *App) killAllClaudeSessions() {
+	for key, ct := range a.claudeSessions {
+		ct.Kill()
+		delete(a.claudeSessions, key)
+	}
+}
+
 // issuesMsg carries fetched issues into the model.
 type issuesMsg struct {
 	issues []models.Issue
@@ -889,6 +897,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Global quit — always works
 		if msg.String() == "ctrl+c" {
+			a.killAllClaudeSessions()
 			return a, tea.Quit
 		}
 
@@ -941,8 +950,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.detail != nil && a.detail.activeTab == tabClaude && a.detail.claudeTab != nil {
 			ct := a.detail.claudeTab
 
-			// Shift+F1: Exit Claude tab
-			if msg.String() == "shift+f1" {
+			// F1: Kill Claude session and close tab
+			if msg.String() == "f1" {
+				issue := a.detail.issue
+				ct.Kill()
+				delete(a.claudeSessions, issue.Key)
+				a.detail.claudeTab = nil
 				a.detail.activeTab = tabDetails
 				return a, nil
 			}
@@ -955,27 +968,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 			}
 
-			// Ctrl+F1: Kill Claude session
-			if msg.String() == "ctrl+f1" {
-				issue := a.detail.issue
-				ct.Kill()
-				delete(a.claudeSessions, issue.Key)
-				a.detail.claudeTab = nil
-				a.detail.activeTab = tabDetails
-				return a, nil
-			}
-
-			// Long-press esc detection
-			if msg.String() == "esc" {
-				ct.StartEscHold()
-				ct.SendKey("Escape")
-				return a, tea.Tick(1500*time.Millisecond, func(t time.Time) tea.Msg {
-					return escHoldCheckMsg{}
-				})
-			}
-
-			// Any other key cancels esc hold and forwards to tmux
-			ct.CancelEscHold()
+			// Forward all keys to tmux (including esc)
 			ct.SendKey(msg.String())
 			return a, nil
 		}
@@ -1055,6 +1048,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if a.state == stateList {
 			if msg.String() == "q" && !a.filterBar.ActiveDropdown() {
+				a.killAllClaudeSessions()
 				return a, tea.Quit
 			}
 			if msg.String() == "p" && !a.filterBar.ActiveDropdown() {
@@ -1069,10 +1063,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, tea.Batch(a.spinner.Tick, fetchIssuesWithJQL(a.client, jql))
 			}
 			if a.detail != nil && !a.filterBar.ActiveDropdown() {
-				if msg.String() >= "1" && msg.String() <= "4" {
+				if msg.String() >= "1" && msg.String() <= "5" {
 					d := *a.detail
 					d, _ = d.Update(msg)
 					a.detail = &d
+					// Restart Claude tick if switching to Claude tab
+					if a.detail.activeTab == tabClaude && a.detail.claudeTab != nil {
+						return a, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+							return claudeTickMsg{}
+						})
+					}
 					return a, nil
 				}
 			}
@@ -1324,16 +1324,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.detail = &d
 			a.detailLoading = false
 			// Attach existing Claude session if any
-			if ct, ok := a.claudeSessions[issueKey]; ok {
-				a.detail.claudeTab = ct
-			}
-			// Fetch dropdown data in parallel
-			return a, tea.Batch(
+			cmds := []tea.Cmd{
 				fetchBoardAssignees(a.client, msg.issue.ProjectKey),
 				fetchTransitions(a.client, msg.issue.Key),
 				fetchPriorities(a.client),
 				fetchLinkTypes(a.client),
-			)
+			}
+			if ct, ok := a.claudeSessions[issueKey]; ok {
+				a.detail.claudeTab = ct
+				a.detail.activeTab = tabClaude
+				cmds = append(cmds, tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+					return claudeTickMsg{}
+				}))
+			}
+			// Fetch dropdown data in parallel
+			return a, tea.Batch(cmds...)
 		}
 		return a, nil
 
@@ -1544,6 +1549,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case profileSwitchedMsg:
 		// Profile was changed — quit so user relaunches with new credentials
+		a.killAllClaudeSessions()
 		return a, tea.Quit
 
 	case errMsg:
@@ -1562,9 +1568,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case claudeTickMsg:
-		if a.detail != nil && a.detail.claudeTab != nil && a.detail.activeTab == tabClaude {
-			cmd := a.detail.claudeTab.Update(msg)
-			return a, cmd
+		if a.detail != nil && a.detail.claudeTab != nil {
+			if a.detail.activeTab == tabClaude {
+				cmd := a.detail.claudeTab.Update(msg)
+				return a, cmd
+			}
+			// Tab not active but session exists — keep ticking slowly so we
+			// can resume instantly when the user switches back
+			return a, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+				return claudeTickMsg{}
+			})
 		}
 		return a, nil
 
@@ -1948,10 +1961,18 @@ func (a App) View() string {
 		content = errStyle.Render("Error: " + a.err.Error())
 	} else {
 		listW := a.listWidth
-		if a.detail != nil && a.detail.activeTab == tabClaude {
-			listW = 20 // Narrow list when Claude tab is active
-		}
 		detailW := a.usableWidth() - listW - 1
+
+		// Sync Claude session keys to list for highlighting and filtering
+		claudeKeys := make(map[string]bool, len(a.claudeSessions))
+		for k := range a.claudeSessions {
+			claudeKeys[k] = true
+		}
+		a.list.claudeKeys = claudeKeys
+		a.list.claudeFilter = a.filterBar.ClaudeFilter()
+		if a.list.claudeFilter {
+			a.list.applyClaudeFilter()
+		}
 
 		// Left pane: list (or loading placeholder)
 		var left string
@@ -2219,7 +2240,7 @@ func (a App) renderHelpBar() string {
 	} else if a.detail != nil && a.detail.Editing() {
 		help = "esc close · enter confirm"
 	} else {
-		help = "f filters · p project · o browser · r refresh · q quit · ? help"
+		help = "F1 claude · f filters · p project · o browser · r refresh · q quit · ? help"
 	}
 
 	left := helpStyle.Render(help)

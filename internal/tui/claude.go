@@ -53,7 +53,8 @@ func (ct *ClaudeTab) Launch(contextPath string) tea.Cmd {
 			if err := tmuxCreateSession(name, w, h); err != nil {
 				return claudeErrMsg{err: "failed to create tmux session: " + err.Error()}
 			}
-			cmd := "claude --prompt-file " + contextPath
+			// Use --append-system-prompt-file to inject ticket context
+			cmd := "claude --append-system-prompt-file " + contextPath
 			if err := tmuxSendKeys(name, cmd); err != nil {
 				return claudeErrMsg{err: "failed to launch claude: " + err.Error()}
 			}

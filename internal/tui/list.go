@@ -53,8 +53,10 @@ type List struct {
 	height      int
 	keyColWidth int    // adjustable key column width for split view
 	draggingCol bool   // true while dragging column border
-	sortCol     string // "key", "summary", or "" (for default/updated)
-	sortAsc     bool   // sort direction
+	sortCol      string // "key", "summary", or "" (for default/updated)
+	sortAsc      bool   // sort direction
+	claudeKeys   map[string]bool // issue keys with active Claude sessions
+	claudeFilter bool            // when true, only show issues with Claude sessions
 }
 
 // maxKeyWidth returns the visual width of the longest issue key.
@@ -443,9 +445,13 @@ func (l List) ViewWithWidth(width, height int) string {
 		keyText := " " + padRight(truncStr(issue.Key, keyW), keyW)
 		sumText := " " + padRight(truncStr(issue.Summary, summaryW), summaryW)
 
+		hasClaude := l.claudeKeys[issue.Key]
 		if i == l.cursor {
 			sel := lipgloss.NewStyle().Foreground(colorText).Background(colorSelection)
 			b.WriteString(sel.Render(keyText) + div + sel.Render(sumText))
+		} else if hasClaude {
+			claudeStyle := lipgloss.NewStyle().Foreground(colorPurple)
+			b.WriteString(claudeStyle.Render(keyText) + div + claudeStyle.Render(sumText))
 		} else {
 			urgency := rowColor(issue)
 			rowStyle := lipgloss.NewStyle().Foreground(urgency)
@@ -463,6 +469,31 @@ func (l List) ViewWithWidth(width, height int) string {
 func (l *List) SetIssues(issues []models.Issue) {
 	l.issues = issues
 	l.filtered = issues
+	l.cursor = 0
+	l.offset = 0
+}
+
+// ToggleClaudeFilter toggles the local Claude session filter.
+func (l *List) ToggleClaudeFilter() {
+	l.claudeFilter = !l.claudeFilter
+	l.applyClaudeFilter()
+}
+
+func (l *List) applyClaudeFilter() {
+	if l.claudeFilter && len(l.claudeKeys) > 0 {
+		var filtered []models.Issue
+		for _, issue := range l.issues {
+			if l.claudeKeys[issue.Key] {
+				filtered = append(filtered, issue)
+			}
+		}
+		l.filtered = filtered
+	} else {
+		l.filtered = l.issues
+		if l.claudeFilter {
+			l.claudeFilter = false // auto-disable if no sessions
+		}
+	}
 	l.cursor = 0
 	l.offset = 0
 }

@@ -59,6 +59,7 @@ type FilterBar struct {
 	sinceDrop    Dropdown
 	sortDrop     Dropdown
 	sortAsc      bool
+	claudeFilter bool // local toggle: show only tickets with Claude sessions
 	width        int
 	saveFlash    int // countdown frames for "Saved!" flash (0 = not flashing)
 
@@ -131,7 +132,7 @@ func fieldWidth(totalW, count int) int {
 }
 
 // fieldCount is the total number of fields in the expanded filter bar (excluding action row).
-const fieldCount = 11
+const fieldCount = 12
 
 // Indices into the field list for click/overlay routing.
 const (
@@ -146,6 +147,7 @@ const (
 	fieldSince     = 8
 	fieldSortBy    = 9
 	fieldDirection = 10
+	fieldClaude    = 11
 )
 
 // Action button indices in the action row.
@@ -370,6 +372,7 @@ func (fb *FilterBar) clearFiltersOnly() {
 			break
 		}
 	}
+	fb.claudeFilter = false
 	fb.activeView = ""
 	fb.saveFlash = 0
 }
@@ -864,6 +867,9 @@ func (fb *FilterBar) activateField(idx int) tea.Cmd {
 	case fieldDirection:
 		fb.ToggleSortDirection()
 		return func() tea.Msg { return sortChangedMsg{} }
+	case fieldClaude:
+		fb.claudeFilter = !fb.claudeFilter
+		return func() tea.Msg { return filterChangedMsg{} }
 	}
 	return nil
 }
@@ -993,6 +999,7 @@ func (fb FilterBar) renderExpanded() string {
 		fb.sinceDrop.View(),
 		fb.sortDrop.View(),
 		fb.renderDirToggle(fieldW),
+		fb.renderClaudeToggle(fieldW),
 	}
 
 	// Split into rows of fpr fields each
@@ -1045,6 +1052,40 @@ func (fb FilterBar) renderDirToggle(width int) string {
 
 	return top + "\n" + mid + "\n" + bot
 }
+
+func (fb FilterBar) renderClaudeToggle(width int) string {
+	innerW := width - 2
+	valW := innerW - 2
+
+	lbl := lipgloss.NewStyle().Foreground(colorPurple)
+	bdr := lipgloss.NewStyle().Foreground(colorBorder)
+
+	labelText := " Claude "
+	dashes := innerW - lipgloss.Width(labelText) - 1
+	if dashes < 0 {
+		dashes = 0
+	}
+
+	top := bdr.Render("╭─") + lbl.Render(labelText) + bdr.Render(strings.Repeat("─", dashes)+"╮")
+
+	var icon string
+	if fb.claudeFilter {
+		icon = lipgloss.NewStyle().Foreground(colorPurple).Render("● Active")
+	} else {
+		icon = lipgloss.NewStyle().Foreground(colorSubtle).Render("○ All")
+	}
+	pad := valW - lipgloss.Width(icon)
+	if pad < 0 {
+		pad = 0
+	}
+	mid := bdr.Render("│") + " " + icon + strings.Repeat(" ", pad) + " " + bdr.Render("│")
+	bot := bdr.Render("╰" + strings.Repeat("─", innerW) + "╯")
+
+	return top + "\n" + mid + "\n" + bot
+}
+
+// ClaudeFilter returns whether the Claude filter is active.
+func (fb FilterBar) ClaudeFilter() bool { return fb.claudeFilter }
 
 // SetSavedViews updates the available saved view names for the load dropdown.
 // The Default view always appears first.
