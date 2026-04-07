@@ -64,6 +64,7 @@ const (
 	tabComments
 	tabAssociations
 	tabAttachments
+	tabClaude
 )
 
 type commentAction int
@@ -154,6 +155,9 @@ type Detail struct {
 	OnPriorityChanged func(issueKey, priorityID string) tea.Cmd
 	OnDueDateChanged  func(issueKey, dueDate string) tea.Cmd
 	OnParentChanged   func(issueKey, parentKey string) tea.Cmd
+
+	// Claude Code integration
+	claudeTab *ClaudeTab
 }
 
 // NewDetail creates a new detail model for the given issue.
@@ -414,12 +418,20 @@ func (d Detail) Editing() bool {
 // tabLabels returns the display labels for each tab.
 func (d Detail) tabLabels() []string {
 	assocCount := len(d.issue.Links) + len(d.issue.Subtasks)
-	return []string{
+	labels := []string{
 		"Details",
 		fmt.Sprintf("Comments(%d)", len(d.issue.Comments)),
 		fmt.Sprintf("Associations(%d)", assocCount),
 		fmt.Sprintf("Attach(%d)", len(d.issue.Attachments)),
 	}
+	if d.claudeTab != nil {
+		indicator := "Claude"
+		if d.claudeTab.HasSession() {
+			indicator = "Claude●"
+		}
+		labels = append(labels, indicator)
+	}
+	return labels
 }
 
 // Update handles messages for the detail view.
@@ -723,6 +735,11 @@ func (d Detail) Update(msg tea.Msg) (Detail, tea.Cmd) {
 		case key.Matches(msg, detailKeys.Tab4):
 			d.activeTab = tabAttachments
 			d.scrollY = 0
+		case key.Matches(msg, detailKeys.Tab5):
+			if d.claudeTab != nil {
+				d.activeTab = tabClaude
+				d.scrollY = 0
+			}
 		case key.Matches(msg, detailKeys.Down):
 			maxScroll := d.tabMaxScroll()
 			if d.scrollY < maxScroll {
@@ -1839,6 +1856,10 @@ func (d Detail) View() string {
 	switch d.activeTab {
 	case tabDetails:
 		baseContent, overlays = d.renderDetailsTabWithOverlays()
+	case tabClaude:
+		if d.claudeTab != nil {
+			baseContent = d.claudeTab.View()
+		}
 	default:
 		switch d.activeTab {
 		case tabComments:
