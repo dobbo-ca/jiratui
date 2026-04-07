@@ -2159,6 +2159,12 @@ func (a App) renderHelpScreen() string {
 	entry("q", "Quit")
 	entry("?", "Toggle this help")
 
+	section("Claude Code")
+	entry("F1", "Launch/attach Claude Code")
+	entry("Shift+F1", "Exit Claude tab")
+	entry("F2", "Full-screen Claude (tmux)")
+	entry("Ctrl+F1", "Kill Claude session")
+
 	section("Mouse")
 	entry("Click", "Select issue")
 	entry("Scroll", "Navigate list")
